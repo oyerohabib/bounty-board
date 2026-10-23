@@ -1,0 +1,16 @@
+.anchor
+.DS_Store
+target
+**/*.rs.bk
+node_modules
+test-ledger
+.yarn
+.surfpool
+app/.next
+app/.env
+app/.env.local
+*.pem
+.security.json
+security.json
+target/deploy/*-keypair.json
+target/deploy/*-upgrade-buffer.json
