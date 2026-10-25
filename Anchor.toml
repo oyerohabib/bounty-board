@@ -1,0 +1,22 @@
+skip_local_validator = true
+
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+bounty_board = "5rL8PzKb61y7VxB5ML1uWMTgqv2kUAA1qkUMoY6Xpm8y"
+
+[programs.devnet]
+bounty_board = "5rL8PzKb61y7VxB5ML1uWMTgqv2kUAA1qkUMoY6Xpm8y"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[hooks]
