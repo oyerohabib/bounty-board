@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f3efe6;
+  --ink: #1c1917;
+  --accent: #115e59;
+  --panel: #fffdf8;
+}
+
+body {
+  color: var(--ink);
+  background:
+    radial-gradient(ellipse 80% 50% at 10% -10%, #d8efe9 0%, transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 0%, #e8dcc8 0%, transparent 50%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+.font-display {
+  font-family: var(--font-display), Georgia, serif;
+}
