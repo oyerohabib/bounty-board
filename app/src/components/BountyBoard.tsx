@@ -196,9 +196,18 @@ export default function BountyBoard() {
           <p className="text-sm uppercase tracking-[0.2em] text-teal-700">
             Solana · Devnet
           </p>
-          <h1 className="mt-1 font-display text-4xl text-stone-900">
-            Bounty Board
-          </h1>
+          <div className="mt-1 flex items-center gap-2.5">
+            <img
+              src="/logo-mark.svg"
+              alt=""
+              width={36}
+              height={36}
+              className="h-9 w-9 shrink-0"
+            />
+            <h1 className="font-display text-4xl leading-none text-stone-900">
+              Bounty Board
+            </h1>
+          </div>
           <p className="mt-2 max-w-md text-stone-600">
             Post a bounty, lock SOL in escrow, and pay hunters when work lands.
           </p>

@@ -16,6 +16,10 @@ const body = Source_Sans_3({
 export const metadata: Metadata = {
   title: "Bounty Board · Solana",
   description: "Mid-level Solana escrow bounty board on Devnet",
+  icons: {
+    icon: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({
