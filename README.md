@@ -1,4 +1,4 @@
-# Solana Bounty Board
+# <img src="./logo.svg" alt="" width="32" height="32" /> Bounty Board
 
 Mid-level Solana + Anchor escrow app: creators post bounties and lock SOL; hunters submit proof; creators accept (pay) or cancel (refund); anyone can trigger an expiry refund after the deadline.
 
