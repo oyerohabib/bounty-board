@@ -1,43 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { PublicKey } from "@solana/web3.js";
 import WalletButton from "@/components/WalletButton";
 import {
   BN,
   BountyAccount,
+  SubmissionAccount,
   getProgram,
   getProvider,
+  fetchBoardAccounts,
   bountyPda,
   vaultPda,
+  submissionPda,
   statusLabel,
+  formatTxError,
+  rpcWithSim,
+  MAX_URI_LEN,
+  SUBMISSION_RENT_SOL,
   SystemProgram,
 } from "@/lib/program";
-
-type Meta = { title: string; description: string };
-
-function loadMeta(): Record<string, Meta> {
-  if (typeof window === "undefined") return {};
-  try {
-    return JSON.parse(localStorage.getItem("bounty_meta") ?? "{}");
-  } catch {
-    return {};
-  }
-}
-
-function saveMeta(key: string, meta: Meta) {
-  const all = loadMeta();
-  all[key] = meta;
-  localStorage.setItem("bounty_meta", JSON.stringify(all));
-}
 
 export default function BountyBoard() {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, sendTransaction } = useWallet();
 
   const [bounties, setBounties] = useState<BountyAccount[]>([]);
-  const [meta, setMeta] = useState<Record<string, Meta>>({});
+  const [submissions, setSubmissions] = useState<SubmissionAccount[]>([]);
   const [busy, setBusy] = useState(false);
   const [txMsg, setTxMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,9 +40,35 @@ export default function BountyBoard() {
   const [days, setDays] = useState("7");
   const [submitUri, setSubmitUri] = useState("");
 
+  const submissionsByBounty = useMemo(() => {
+    const map = new Map<string, SubmissionAccount[]>();
+    for (const s of submissions) {
+      const key = s.account.bounty.toBase58();
+      const list = map.get(key) ?? [];
+      list.push(s);
+      map.set(key, list);
+    }
+    return map;
+  }, [submissions]);
+
+  const openBountyKeys = useMemo(
+    () => new Set(bounties.map((b) => b.publicKey.toBase58())),
+    [bounties]
+  );
+
+  const reclaimable = useMemo(() => {
+    if (!publicKey) return [] as SubmissionAccount[];
+    return submissions.filter(
+      (s) =>
+        s.account.hunter.equals(publicKey) &&
+        !openBountyKeys.has(s.account.bounty.toBase58())
+    );
+  }, [submissions, publicKey, openBountyKeys]);
+
   const refresh = useCallback(async () => {
     if (!wallet || !publicKey) {
       setBounties([]);
+      setSubmissions([]);
       setBalanceSol(null);
       return;
     }
@@ -59,9 +76,10 @@ export default function BountyBoard() {
       const lamports = await connection.getBalance(publicKey);
       setBalanceSol(lamports / 1e9);
       const program = getProgram(getProvider(wallet));
-      const rows = await program.account.bounty.all();
-      setBounties(rows as unknown as BountyAccount[]);
-      setMeta(loadMeta());
+      const { bounties: bountyRows, submissions: submissionRows } =
+        await fetchBoardAccounts(program);
+      setBounties(bountyRows);
+      setSubmissions(submissionRows);
     } catch (e) {
       console.error(e);
       setError(e instanceof Error ? e.message : "Failed to fetch bounties");
@@ -81,7 +99,7 @@ export default function BountyBoard() {
       setTxMsg(`${label}: ${sig}`);
       await refresh();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = formatTxError(e);
       if (/user rejected|rejected the request/i.test(msg)) {
         setError("Request cancelled in Phantom.");
       } else {
@@ -97,8 +115,21 @@ export default function BountyBoard() {
     e.preventDefault();
     if (!wallet || !publicKey) return;
 
+    const amountLamports = Math.round(parseFloat(amountSol) * 1e9);
+    if (!Number.isFinite(amountLamports) || amountLamports <= 0) {
+      setError("Enter a valid SOL amount greater than 0.");
+      return;
+    }
+    const rentBuffer = 0.01;
+    if (balanceSol !== null && balanceSol < amountLamports / 1e9 + rentBuffer) {
+      setError(
+        `Not enough SOL. Need ~${(amountLamports / 1e9 + rentBuffer).toFixed(3)} SOL (escrow + rent); you have ${balanceSol.toFixed(4)} SOL.`
+      );
+      return;
+    }
+
     const bountyId = new BN(Date.now());
-    const amount = new BN(Math.round(parseFloat(amountSol) * 1e9));
+    const amount = new BN(amountLamports);
     const deadline = new BN(
       Math.floor(Date.now() / 1000) + parseInt(days, 10) * 86400
     );
@@ -107,16 +138,15 @@ export default function BountyBoard() {
 
     await withTx("Created", async () => {
       const program = getProgram(getProvider(wallet));
-      const sig = await program.methods
-        .createBounty(bountyId, amount, deadline)
+      const builder = program.methods
+        .createBounty(bountyId, amount, deadline, title.trim(), description.trim())
         .accountsPartial({
           creator: publicKey,
           bounty,
           vault,
           systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-      saveMeta(bounty.toBase58(), { title, description });
+        });
+      const sig = await rpcWithSim(builder, publicKey, connection, sendTransaction);
       setTitle("");
       setDescription("");
       return sig;
@@ -124,33 +154,50 @@ export default function BountyBoard() {
   }
 
   async function onSubmit(row: BountyAccount) {
-    if (!wallet || !publicKey || !submitUri) return;
+    if (!wallet || !publicKey) return;
+    const uri = submitUri.trim();
+    if (!uri) {
+      setError("Paste a submission URI first.");
+      return;
+    }
+    if (uri.length > MAX_URI_LEN) {
+      setError(`Submission URI is too long (max ${MAX_URI_LEN} characters).`);
+      return;
+    }
+    if (balanceSol !== null && balanceSol < SUBMISSION_RENT_SOL) {
+      setError(
+        `Hunter wallet needs ~${SUBMISSION_RENT_SOL} SOL free for the submission account rent (you have ${balanceSol.toFixed(4)} SOL).`
+      );
+      return;
+    }
+
+    const [submission] = submissionPda(row.publicKey, publicKey);
     await withTx("Submitted", async () => {
       const program = getProgram(getProvider(wallet));
-      return program.methods
-        .submitWork(submitUri)
-        .accountsPartial({
-          hunter: publicKey,
-          bounty: row.publicKey,
-        })
-        .rpc();
+      const builder = program.methods.submitWork(uri).accountsPartial({
+        hunter: publicKey,
+        bounty: row.publicKey,
+        submission,
+        systemProgram: SystemProgram.programId,
+      });
+      return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
 
-  async function onAccept(row: BountyAccount) {
+  async function onAccept(row: BountyAccount, sub: SubmissionAccount) {
     if (!wallet || !publicKey) return;
     const [vault] = vaultPda(row.publicKey);
+    const hunter = new PublicKey(sub.account.hunter.toString());
     await withTx("Accepted", async () => {
       const program = getProgram(getProvider(wallet));
-      return program.methods
-        .accept()
-        .accountsPartial({
-          creator: publicKey,
-          hunter: row.account.hunter,
-          bounty: row.publicKey,
-          vault,
-        })
-        .rpc();
+      const builder = program.methods.accept().accountsPartial({
+        creator: publicKey,
+        hunter,
+        bounty: row.publicKey,
+        submission: sub.publicKey,
+        vault,
+      });
+      return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
 
@@ -159,14 +206,12 @@ export default function BountyBoard() {
     const [vault] = vaultPda(row.publicKey);
     await withTx("Cancelled", async () => {
       const program = getProgram(getProvider(wallet));
-      return program.methods
-        .cancel()
-        .accountsPartial({
-          creator: publicKey,
-          bounty: row.publicKey,
-          vault,
-        })
-        .rpc();
+      const builder = program.methods.cancel().accountsPartial({
+        creator: publicKey,
+        bounty: row.publicKey,
+        vault,
+      });
+      return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
 
@@ -175,15 +220,26 @@ export default function BountyBoard() {
     const [vault] = vaultPda(row.publicKey);
     await withTx("Expired refund", async () => {
       const program = getProgram(getProvider(wallet));
-      return program.methods
-        .expireRefund()
-        .accountsPartial({
-          caller: publicKey,
-          creator: row.account.creator,
-          bounty: row.publicKey,
-          vault,
-        })
-        .rpc();
+      const builder = program.methods.expireRefund().accountsPartial({
+        caller: publicKey,
+        creator: row.account.creator,
+        bounty: row.publicKey,
+        vault,
+      });
+      return rpcWithSim(builder, publicKey, connection, sendTransaction);
+    });
+  }
+
+  async function onReclaim(sub: SubmissionAccount) {
+    if (!wallet || !publicKey) return;
+    await withTx("Reclaimed", async () => {
+      const program = getProgram(getProvider(wallet));
+      const builder = program.methods.reclaimSubmission().accountsPartial({
+        hunter: publicKey,
+        bounty: sub.account.bounty,
+        submission: sub.publicKey,
+      });
+      return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
 
@@ -300,16 +356,18 @@ export default function BountyBoard() {
             <form onSubmit={onCreate} className="mt-4 grid gap-3">
               <input
                 className="rounded border border-stone-300 bg-white px-3 py-2"
-                placeholder="Title (stored locally)"
+                placeholder="Title (on-chain, max 64 chars)"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
+                maxLength={64}
                 required
               />
               <textarea
                 className="rounded border border-stone-300 bg-white px-3 py-2"
-                placeholder="Description (stored locally)"
+                placeholder="Description (on-chain, max 280 chars)"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
+                maxLength={280}
                 rows={3}
                 required
               />
@@ -367,7 +425,14 @@ export default function BountyBoard() {
                 placeholder="https://github.com/you/pr/12"
                 value={submitUri}
                 onChange={(e) => setSubmitUri(e.target.value)}
+                maxLength={MAX_URI_LEN}
               />
+              <span className="mt-1 block text-xs text-stone-500">
+                Paste a link (max {MAX_URI_LEN} chars), then Submit work on a
+                bounty. Use a hunter account (not the creator) with ≥
+                {SUBMISSION_RENT_SOL} SOL for rent. Creator picks which
+                submission to pay.
+              </span>
             </label>
 
             {bounties.length === 0 ? (
@@ -376,14 +441,13 @@ export default function BountyBoard() {
               <ul className="space-y-6">
                 {bounties.map((b) => {
                   const key = b.publicKey.toBase58();
-                  const m = meta[key];
                   const status = statusLabel(b.account.status);
                   const isCreator =
                     publicKey && b.account.creator.equals(publicKey);
                   const deadline = b.account.deadline.toNumber();
                   const expired = now >= deadline;
-                  const openish =
-                    status === "Open" || status === "Submitted";
+                  const isOpen = status === "Open";
+                  const subs = submissionsByBounty.get(key) ?? [];
 
                   return (
                     <li
@@ -393,14 +457,17 @@ export default function BountyBoard() {
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div>
                           <h3 className="text-lg font-medium text-stone-900">
-                            {m?.title ?? `Bounty #${b.account.bountyId.toString()}`}
+                            {b.account.title || `Bounty #${b.account.bountyId.toString()}`}
                           </h3>
                           <p className="mt-1 text-sm text-stone-600">
-                            {m?.description ?? "No local description"}
+                            {b.account.description || "No description"}
                           </p>
                         </div>
                         <span className="rounded bg-stone-100 px-2 py-1 text-xs uppercase tracking-wide text-stone-700">
                           {status}
+                          {isOpen && subs.length > 0
+                            ? ` · ${subs.length} submission${subs.length === 1 ? "" : "s"}`
+                            : ""}
                         </span>
                       </div>
                       <dl className="mt-3 grid gap-1 text-sm text-stone-600 sm:grid-cols-2">
@@ -417,19 +484,52 @@ export default function BountyBoard() {
                         <div className="sm:col-span-2 break-all">
                           Creator: {b.account.creator.toBase58()}
                         </div>
-                        {status === "Submitted" && (
-                          <>
-                            <div className="sm:col-span-2 break-all">
-                              Hunter: {b.account.hunter.toBase58()}
-                            </div>
-                            <div className="sm:col-span-2 break-all">
-                              Proof: {b.account.submissionUri}
-                            </div>
-                          </>
-                        )}
                       </dl>
+
+                      {subs.length > 0 && (
+                        <ul className="mt-3 space-y-2 rounded border border-stone-200 bg-white/60 p-3">
+                          {subs.map((s) => {
+                            const mine =
+                              publicKey && s.account.hunter.equals(publicKey);
+                            return (
+                              <li
+                                key={s.publicKey.toBase58()}
+                                className="flex flex-wrap items-start justify-between gap-2 text-sm"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <p className="break-all text-stone-800">
+                                    <a
+                                      href={s.account.uri}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-teal-800 underline"
+                                    >
+                                      {s.account.uri}
+                                    </a>
+                                    {mine ? " · you" : ""}
+                                  </p>
+                                  <p className="mt-0.5 break-all text-xs text-stone-500">
+                                    {s.account.hunter.toBase58()}
+                                  </p>
+                                </div>
+                                {isCreator && isOpen && (
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => void onAccept(b, s)}
+                                    className="shrink-0 rounded bg-teal-800 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+                                  >
+                                    Accept & pay
+                                  </button>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {openish && !isCreator && (
+                        {isOpen && !isCreator && (
                           <button
                             type="button"
                             disabled={busy || !submitUri || expired}
@@ -439,17 +539,7 @@ export default function BountyBoard() {
                             Submit work
                           </button>
                         )}
-                        {isCreator && status === "Submitted" && (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void onAccept(b)}
-                            className="rounded bg-teal-800 px-3 py-1.5 text-sm text-white disabled:opacity-40"
-                          >
-                            Accept & pay
-                          </button>
-                        )}
-                        {isCreator && openish && (
+                        {isCreator && isOpen && (
                           <button
                             type="button"
                             disabled={busy}
@@ -459,7 +549,7 @@ export default function BountyBoard() {
                             Cancel & refund
                           </button>
                         )}
-                        {openish && expired && (
+                        {isOpen && expired && (
                           <button
                             type="button"
                             disabled={busy}
@@ -471,7 +561,7 @@ export default function BountyBoard() {
                         )}
                       </div>
                       <p className="mt-2 text-xs text-stone-400 break-all">
-                        {key} · slot hint via {connection.rpcEndpoint}
+                        {key} · {connection.rpcEndpoint}
                       </p>
                     </li>
                   );
@@ -479,6 +569,41 @@ export default function BountyBoard() {
               </ul>
             )}
           </section>
+
+          {reclaimable.length > 0 && (
+            <section className="mt-10 border-t border-stone-200 pt-8">
+              <h2 className="font-display text-2xl text-stone-900">
+                Reclaim submission rent
+              </h2>
+              <p className="mt-1 text-sm text-stone-600">
+                These submissions belong to closed bounties. Close them to recover
+                rent.
+              </p>
+              <ul className="mt-4 space-y-3">
+                {reclaimable.map((s) => (
+                  <li
+                    key={s.publicKey.toBase58()}
+                    className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                  >
+                    <span className="break-all text-stone-700">
+                      {s.account.uri}{" "}
+                      <span className="text-stone-400">
+                        (bounty {s.account.bounty.toBase58().slice(0, 8)}…)
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void onReclaim(s)}
+                      className="rounded border border-stone-400 px-3 py-1.5 text-stone-700 disabled:opacity-40"
+                    >
+                      Reclaim rent
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </>
       )}
     </div>
