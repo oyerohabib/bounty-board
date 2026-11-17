@@ -28,4 +28,10 @@ pub enum BountyError {
     InvalidSubmission,
     #[msg("Cannot reclaim while the bounty is still open")]
     BountyStillOpen,
+    #[msg("This submission URI is already claimed on this bounty")]
+    UriAlreadyClaimed,
+    #[msg("URI hash does not match the submission URI")]
+    InvalidUriHash,
+    #[msg("Winning submission cannot be reclaimed")]
+    CannotReclaimWinner,
 }
