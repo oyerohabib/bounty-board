@@ -61,3 +61,7 @@ export function notifyWarning(
 export function dismissToast(id: string | number) {
   toast.dismiss(id);
 }
+
+export function dismissAllToasts() {
+  toast.dismiss();
+}

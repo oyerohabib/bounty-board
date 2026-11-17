@@ -7,6 +7,8 @@ import {
 } from "@solana/wallet-adapter-react";
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
+import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
+import { BackpackWalletAdapter } from "@solana/wallet-adapter-backpack";
 import {
   WalletError,
   WalletNotReadyError,
@@ -30,10 +32,17 @@ export default function AppWalletProvider({
     () => process.env.NEXT_PUBLIC_RPC_URL ?? clusterApiUrl("devnet"),
     []
   );
-  const wallets = useMemo(() => [new PhantomWalletAdapter()], []);
+  const wallets = useMemo(
+    () => [
+      new PhantomWalletAdapter(),
+      new SolflareWalletAdapter(),
+      new BackpackWalletAdapter(),
+    ],
+    []
+  );
 
   const onError = useCallback((error: WalletError) => {
-    // User cancelled the Phantom popup — not an app bug.
+    // User cancelled the wallet popup — not an app bug.
     if (
       error.name === "WalletConnectionError" ||
       error.message?.toLowerCase().includes("user rejected") ||

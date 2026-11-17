@@ -189,7 +189,7 @@ export default function BountyBoard() {
     } catch (e) {
       const msg = formatTxError(e);
       if (/user rejected|rejected the request/i.test(msg)) {
-        notifyError("Request cancelled in Phantom.");
+        notifyError("Request cancelled in wallet.");
       } else {
         console.error(e);
         notifyError(msg);
@@ -601,7 +601,7 @@ export default function BountyBoard() {
           <WalletButton />
           {connected && balanceSol !== null && (
             <p className="animate-fade-in text-sm text-stone-600">
-              Phantom Devnet: <strong>{balanceSol.toFixed(4)} SOL</strong>
+              Devnet: <strong>{balanceSol.toFixed(4)} SOL</strong>
               {balanceSol < 0.05 && (
                 <>
                   {" · "}
@@ -622,8 +622,8 @@ export default function BountyBoard() {
 
       {connected && balanceSol !== null && balanceSol < 0.05 && (
         <p className="board-banner mb-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-950">
-          Your connected Phantom wallet needs Devnet SOL (this is separate from
-          the CLI deploy wallet). Copy your address from Phantom → fund it at{" "}
+          Your connected wallet needs Devnet SOL (this is separate from the CLI
+          deploy wallet). Copy your address from the wallet menu → fund it at{" "}
           <a
             className="underline"
             href="https://faucet.solana.com/"
@@ -638,34 +638,22 @@ export default function BountyBoard() {
 
       {!connected ? (
         <div className="animate-fade-up space-y-3 text-stone-600">
-          <p>Connect Phantom from the button above to start.</p>
+          <p>Connect a Solana wallet from the button above to start.</p>
           <ol className="list-decimal space-y-1 pl-5 text-sm">
             <li>
-              Install the{" "}
-              <a
-                className="text-teal-800 underline"
-                href="https://phantom.com/download"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Phantom browser extension
-              </a>{" "}
-              (Chrome / Brave / Edge / Firefox) — not the mobile app.
+              Install a browser wallet (Phantom, Solflare, or Backpack) if you
+              don’t have one yet — use <strong>Install</strong> in the picker.
             </li>
             <li>Open the extension, create or import a wallet.</li>
             <li>
-              In Phantom: Settings → Developer Settings → enable{" "}
-              <strong>Testnet Mode</strong>, then select <strong>Devnet</strong>.
+              Switch the wallet network to <strong>Devnet</strong> (often under
+              Developer / Testnet settings).
             </li>
             <li>
-              Reload this page, click <strong>Connect Phantom</strong>. Approve
-              the Phantom extension popup (not phantom.com).
+              Click <strong>Connect wallet</strong>, pick your extension, and
+              approve the popup.
             </li>
           </ol>
-          <p className="text-sm text-stone-500">
-            If it still opens phantom.com, the extension isn’t installed or isn’t
-            enabled for this browser.
-          </p>
         </div>
       ) : (
         <div className="animate-fade-up">
