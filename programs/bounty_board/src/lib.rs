@@ -20,8 +20,17 @@ pub mod bounty_board {
         bounty_id: u64,
         amount: u64,
         deadline: i64,
+        title: String,
+        description: String,
     ) -> Result<()> {
-        instructions::create_bounty::handle_create_bounty(ctx, bounty_id, amount, deadline)
+        instructions::create_bounty::handle_create_bounty(
+            ctx,
+            bounty_id,
+            amount,
+            deadline,
+            title,
+            description,
+        )
     }
 
     pub fn submit_work(ctx: Context<SubmitWork>, submission_uri: String) -> Result<()> {
@@ -38,5 +47,9 @@ pub mod bounty_board {
 
     pub fn expire_refund(ctx: Context<ExpireRefund>) -> Result<()> {
         instructions::expire_refund::handle_expire_refund(ctx)
+    }
+
+    pub fn reclaim_submission(ctx: Context<ReclaimSubmission>) -> Result<()> {
+        instructions::reclaim_submission::handle_reclaim_submission(ctx)
     }
 }
