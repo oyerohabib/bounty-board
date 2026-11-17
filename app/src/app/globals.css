@@ -7,6 +7,10 @@
   --ink: #1c1917;
   --accent: #115e59;
   --panel: #fffdf8;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 150ms;
+  --dur: 280ms;
+  --dur-slow: 420ms;
 }
 
 body {
@@ -22,6 +26,115 @@ body {
   font-family: var(--font-display), Georgia, serif;
 }
 
+/* ——— Motion primitives ——— */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(0.55rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.35rem) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in var(--dur) var(--ease-out) both;
+}
+
+.animate-fade-up {
+  animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+
+.animate-menu-in {
+  animation: menu-in var(--dur) var(--ease-out) both;
+  transform-origin: top right;
+}
+
+.stagger-children > * {
+  animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+
+.stagger-children > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger-children > *:nth-child(2) {
+  animation-delay: 45ms;
+}
+.stagger-children > *:nth-child(3) {
+  animation-delay: 90ms;
+}
+.stagger-children > *:nth-child(4) {
+  animation-delay: 135ms;
+}
+.stagger-children > *:nth-child(5) {
+  animation-delay: 180ms;
+}
+.stagger-children > *:nth-child(6) {
+  animation-delay: 225ms;
+}
+.stagger-children > *:nth-child(7) {
+  animation-delay: 270ms;
+}
+.stagger-children > *:nth-child(8) {
+  animation-delay: 315ms;
+}
+.stagger-children > *:nth-child(n + 9) {
+  animation-delay: 360ms;
+}
+
+/* Interactive defaults */
+button,
+a,
+input,
+textarea {
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.board-section {
+  animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+
+.board-banner {
+  animation: fade-in var(--dur) var(--ease-out) both;
+}
+
+.bounty-card {
+  transition:
+    background-color var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out);
+}
+
 /* Affordance: connected wallet opens a dropdown (change / disconnect). */
 .wallet-btn-wrap.is-connected .wallet-adapter-button-trigger::after {
   content: "";
@@ -33,4 +146,33 @@ body {
   border-bottom: 2px solid currentColor;
   transform: translateY(-0.12em) rotate(45deg);
   opacity: 0.85;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+.wallet-btn-wrap.is-connected .wallet-adapter-button-trigger[aria-expanded="true"]::after {
+  transform: translateY(0.08em) rotate(225deg);
+}
+
+.wallet-adapter-button-trigger {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  button:not(:disabled):active {
+    transform: none;
+  }
 }

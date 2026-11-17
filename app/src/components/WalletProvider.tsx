@@ -12,7 +12,14 @@ import {
   WalletNotReadyError,
 } from "@solana/wallet-adapter-base";
 import { clusterApiUrl } from "@solana/web3.js";
+import { usePhantomAccountSync } from "@/hooks/usePhantomAccountSync";
 import "@solana/wallet-adapter-react-ui/styles.css";
+
+/** Must sit under WalletProvider so useWallet() works. */
+function PhantomAccountSync() {
+  usePhantomAccountSync();
+  return null;
+}
 
 export default function AppWalletProvider({
   children,
@@ -40,8 +47,11 @@ export default function AppWalletProvider({
 
   return (
     <ConnectionProvider endpoint={endpoint}>
-      <WalletProvider wallets={wallets} autoConnect={false} onError={onError}>
-        <WalletModalProvider>{children}</WalletModalProvider>
+      <WalletProvider wallets={wallets} autoConnect onError={onError}>
+        <WalletModalProvider>
+          <PhantomAccountSync />
+          {children}
+        </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
   );

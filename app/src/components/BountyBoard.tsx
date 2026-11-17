@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import WalletButton from "@/components/WalletButton";
@@ -26,6 +27,10 @@ import {
   SystemProgram,
 } from "@/lib/program";
 import { notifySuccess, notifyError } from "@/lib/toast";
+import {
+  accountSwitchFrom,
+  isAccountSwitching,
+} from "@/lib/accountSwitch";
 
 function formatSubmittedAt(ts: BN | number): string {
   const n = typeof ts === "number" ? ts : ts.toNumber();
@@ -33,10 +38,19 @@ function formatSubmittedAt(ts: BN | number): string {
   return new Date(n * 1000).toLocaleString();
 }
 
+function shortAddress(base58: string): string {
+  return `${base58.slice(0, 4)}…${base58.slice(-4)}`;
+}
+
+/** Survives remounts during disconnect/reconnect so switch toasts still fire. */
+let lastAccountKeyForToast: string | null = null;
+
 export default function BountyBoard() {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
   const { publicKey, connected, sendTransaction } = useWallet();
+  const accountKey = publicKey?.toBase58() ?? null;
+  const prevAccountKey = useRef<string | null>(null);
 
   const [bounties, setBounties] = useState<BountyAccount[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionAccount[]>([]);
@@ -48,7 +62,8 @@ export default function BountyBoard() {
   const [description, setDescription] = useState("");
   const [amountSol, setAmountSol] = useState("0.1");
   const [days, setDays] = useState("7");
-  const [submitUri, setSubmitUri] = useState("");
+  /** Per-bounty submission URI drafts (keyed by bounty pubkey). */
+  const [submitUris, setSubmitUris] = useState<Record<string, string>>({});
 
   const submissionsByBounty = useMemo(() => {
     const map = new Map<string, SubmissionAccount[]>();
@@ -102,6 +117,8 @@ export default function BountyBoard() {
 
   const refresh = useCallback(async () => {
     if (!wallet || !publicKey) {
+      // Keep board visible during Switch account reconnect (same or new key).
+      if (isAccountSwitching()) return;
       setBounties([]);
       setSubmissions([]);
       setBalanceSol(null);
@@ -128,8 +145,36 @@ export default function BountyBoard() {
   }, [wallet, publicKey, connection]);
 
   useEffect(() => {
+    // No-op switch: reconnect landed on the same key — skip board refresh.
+    if (
+      accountKey &&
+      isAccountSwitching() &&
+      accountSwitchFrom() === accountKey
+    ) {
+      return;
+    }
     void refresh();
-  }, [refresh, connected]);
+  }, [refresh, connected, accountKey]);
+
+  useEffect(() => {
+    if (!accountKey) {
+      if (isAccountSwitching()) return;
+      setSubmitUris({});
+      return;
+    }
+    if (isAccountSwitching() && accountSwitchFrom() === accountKey) return;
+    setSubmitUris({});
+  }, [accountKey]);
+
+  useEffect(() => {
+    const prev = lastAccountKeyForToast ?? prevAccountKey.current;
+    if (!accountKey) return;
+    if (prev && prev !== accountKey) {
+      notifySuccess("Account switched", shortAddress(accountKey));
+    }
+    prevAccountKey.current = accountKey;
+    lastAccountKeyForToast = accountKey;
+  }, [accountKey]);
 
   async function withTx(label: string, fn: () => Promise<RpcOutcome>) {
     setBusy(true);
@@ -204,11 +249,29 @@ export default function BountyBoard() {
     });
   }
 
+  function setSubmitUriFor(bountyKey: string, value: string) {
+    setSubmitUris((prev) => ({ ...prev, [bountyKey]: value }));
+  }
+
   async function onSubmit(row: BountyAccount) {
     if (!wallet || !publicKey) return;
-    const uri = submitUri.trim();
+    const bountyKey = row.publicKey.toBase58();
+    const existingMine = submissions.find(
+      (s) =>
+        s.account.bounty.equals(row.publicKey) &&
+        s.account.hunter.equals(publicKey)
+    );
+    const uri = (
+      bountyKey in submitUris
+        ? submitUris[bountyKey]
+        : (existingMine?.account.uri ?? "")
+    ).trim();
     if (!uri) {
-      notifyError("Paste a submission URI first.");
+      notifyError("Paste a submission URI for this bounty first.");
+      return;
+    }
+    if (existingMine && uri === existingMine.account.uri.trim()) {
+      notifyError("Nothing to update — change the URI first.");
       return;
     }
     if (uri.length > MAX_URI_LEN) {
@@ -258,7 +321,13 @@ export default function BountyBoard() {
         connection,
         sendTransaction
       );
-      if (result.ok) setSubmitUri("");
+      if (result.ok) {
+        setSubmitUris((prev) => {
+          const next = { ...prev };
+          delete next[bountyKey];
+          return next;
+        });
+      }
       return result;
     });
   }
@@ -340,11 +409,22 @@ export default function BountyBoard() {
     const hasWinner =
       !b.account.winner.equals(PublicKey.default) &&
       status === "Completed";
+    const mySub = publicKey
+      ? subs.find((s) => s.account.hunter.equals(publicKey))
+      : undefined;
+    // Prefer explicit draft; otherwise prefill with this hunter's existing URI.
+    const cardUri =
+      key in submitUris ? submitUris[key] : (mySub?.account.uri ?? "");
+    const trimmedUri = cardUri.trim();
+    const uriUnchanged =
+      !!mySub && trimmedUri === mySub.account.uri.trim();
+    const canSubmit =
+      !!trimmedUri && !expired && !busy && !uriUnchanged;
 
     return (
       <li
         key={key}
-        className="border-b border-stone-200 pb-6 last:border-0"
+        className="bounty-card border-b border-stone-200 pb-6 last:border-0"
       >
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
@@ -429,18 +509,41 @@ export default function BountyBoard() {
           </ul>
         )}
 
+        {!opts.history && isOpen && !isCreator && (
+          <div className="mt-4 space-y-2">
+            <label className="block text-sm text-stone-600">
+              Your submission URI
+              <input
+                className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
+                placeholder="https://github.com/you/pr/12"
+                value={cardUri}
+                onChange={(e) => setSubmitUriFor(key, e.target.value)}
+                maxLength={MAX_URI_LEN}
+                disabled={expired}
+              />
+              <span className="mt-1 block text-xs text-stone-500">
+                Unique per bounty (max {MAX_URI_LEN} chars). Needs ≥
+                {SUBMISSION_RENT_SOL} SOL for rent.
+              </span>
+            </label>
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => void onSubmit(b)}
+              className="rounded border border-teal-800 px-3 py-1.5 text-sm text-teal-900 disabled:opacity-40"
+            >
+              {mySub ? "Update submission" : "Submit work"}
+            </button>
+            {uriUnchanged && (
+              <p className="text-xs text-stone-500">
+                Change the URI to enable an update.
+              </p>
+            )}
+          </div>
+        )}
+
         {!opts.history && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {isOpen && !isCreator && (
-              <button
-                type="button"
-                disabled={busy || !submitUri || expired}
-                onClick={() => void onSubmit(b)}
-                className="rounded border border-teal-800 px-3 py-1.5 text-sm text-teal-900 disabled:opacity-40"
-              >
-                Submit work
-              </button>
-            )}
             {isCreator && isOpen && (
               <button
                 type="button"
@@ -478,25 +581,26 @@ export default function BountyBoard() {
             Solana · Devnet
           </p>
           <div className="mt-1 flex items-center gap-2.5">
-            <img
+            <Image
               src="/logo-mark.svg"
               alt=""
               width={36}
               height={36}
               className="h-9 w-9 shrink-0"
+              priority
             />
             <h1 className="font-display text-4xl leading-none text-stone-900">
               Bounty Board
             </h1>
           </div>
-          <p className="mt-2 max-w-md text-stone-600">
+          <p className="mt-2 max-w-lg text-stone-600">
             Post a bounty, lock SOL in escrow, and pay hunters when work lands.
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
           <WalletButton />
           {connected && balanceSol !== null && (
-            <p className="text-sm text-stone-600">
+            <p className="animate-fade-in text-sm text-stone-600">
               Phantom Devnet: <strong>{balanceSol.toFixed(4)} SOL</strong>
               {balanceSol < 0.05 && (
                 <>
@@ -517,7 +621,7 @@ export default function BountyBoard() {
       </header>
 
       {connected && balanceSol !== null && balanceSol < 0.05 && (
-        <p className="mb-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-950">
+        <p className="board-banner mb-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-950">
           Your connected Phantom wallet needs Devnet SOL (this is separate from
           the CLI deploy wallet). Copy your address from Phantom → fund it at{" "}
           <a
@@ -533,7 +637,7 @@ export default function BountyBoard() {
       )}
 
       {!connected ? (
-        <div className="space-y-3 text-stone-600">
+        <div className="animate-fade-up space-y-3 text-stone-600">
           <p>Connect Phantom from the button above to start.</p>
           <ol className="list-decimal space-y-1 pl-5 text-sm">
             <li>
@@ -554,8 +658,8 @@ export default function BountyBoard() {
               <strong>Testnet Mode</strong>, then select <strong>Devnet</strong>.
             </li>
             <li>
-              Reload this page, click <strong>Select Wallet → Phantom</strong>. A
-              popup from the extension should appear (not phantom.com).
+              Reload this page, click <strong>Connect Phantom</strong>. Approve
+              the Phantom extension popup (not phantom.com).
             </li>
           </ol>
           <p className="text-sm text-stone-500">
@@ -564,8 +668,8 @@ export default function BountyBoard() {
           </p>
         </div>
       ) : (
-        <>
-          <section className="mb-12 border-t border-stone-200 pt-8">
+        <div className="animate-fade-up">
+          <section className="board-section mb-12 border-t border-stone-200 pt-8">
             <h2 className="font-display text-2xl text-stone-900">Post a bounty</h2>
             <form onSubmit={onCreate} className="mt-4 grid gap-3">
               <input
@@ -620,7 +724,10 @@ export default function BountyBoard() {
             </form>
           </section>
 
-          <section className="border-t border-stone-200 pt-8">
+          <section
+            className="board-section border-t border-stone-200 pt-8"
+            style={{ animationDelay: "60ms" }}
+          >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-display text-2xl text-stone-900">Open board</h2>
               <button
@@ -633,41 +740,28 @@ export default function BountyBoard() {
               </button>
             </div>
 
-            <label className="mb-6 block text-sm text-stone-600">
-              Submission URI (for hunters)
-              <input
-                className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
-                placeholder="https://github.com/you/pr/12"
-                value={submitUri}
-                onChange={(e) => setSubmitUri(e.target.value)}
-                maxLength={MAX_URI_LEN}
-              />
-              <span className="mt-1 block text-xs text-stone-500">
-                Each URI must be unique per bounty (max {MAX_URI_LEN} chars).
-                Hunter needs ≥{SUBMISSION_RENT_SOL} SOL for rent. Creator picks
-                which submission to pay.
-              </span>
-            </label>
-
             {openBounties.length === 0 ? (
-              <p className="text-stone-500">No open bounties on-chain.</p>
+              <p className="animate-fade-in text-stone-500">No open bounties on-chain.</p>
             ) : (
-              <ul className="space-y-6">
+              <ul className="stagger-children space-y-6">
                 {openBounties.map((b) => renderBountyCard(b, {}))}
               </ul>
             )}
           </section>
 
-          <section className="mt-10 border-t border-stone-200 pt-8">
+          <section
+            className="board-section mt-10 border-t border-stone-200 pt-8"
+            style={{ animationDelay: "120ms" }}
+          >
             <h2 className="font-display text-2xl text-stone-900">History</h2>
             <p className="mt-1 text-sm text-stone-600">
               Completed, cancelled, and expired bounties stay on-chain with their
               submissions.
             </p>
             {historyBounties.length === 0 ? (
-              <p className="mt-4 text-stone-500">No settled bounties yet.</p>
+              <p className="animate-fade-in mt-4 text-stone-500">No settled bounties yet.</p>
             ) : (
-              <ul className="mt-4 space-y-6">
+              <ul className="stagger-children mt-4 space-y-6">
                 {historyBounties.map((b) =>
                   renderBountyCard(b, { history: true })
                 )}
@@ -676,7 +770,10 @@ export default function BountyBoard() {
           </section>
 
           {reclaimable.length > 0 && (
-            <section className="mt-10 border-t border-stone-200 pt-8">
+            <section
+              className="board-section mt-10 border-t border-stone-200 pt-8"
+              style={{ animationDelay: "180ms" }}
+            >
               <h2 className="font-display text-2xl text-stone-900">
                 Reclaim submission rent
               </h2>
@@ -684,7 +781,7 @@ export default function BountyBoard() {
                 Non-winning submissions on settled bounties. Close them to recover
                 rent (and free the URI claim).
               </p>
-              <ul className="mt-4 space-y-3">
+              <ul className="stagger-children mt-4 space-y-3">
                 {reclaimable.map((s) => (
                   <li
                     key={s.publicKey.toBase58()}
@@ -710,7 +807,7 @@ export default function BountyBoard() {
               </ul>
             </section>
           )}
-        </>
+        </div>
       )}
     </div>
   );
