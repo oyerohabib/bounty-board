@@ -14,8 +14,7 @@ pub struct Cancel<'info> {
         seeds = [BOUNTY_SEED, creator.key().as_ref(), &bounty.bounty_id.to_le_bytes()],
         bump = bounty.bump,
         has_one = creator @ BountyError::UnauthorizedCreator,
-        constraint = bounty.status == BountyStatus::Open @ BountyError::CannotCancel,
-        close = creator
+        constraint = bounty.status == BountyStatus::Open @ BountyError::CannotCancel
     )]
     pub bounty: Account<'info, Bounty>,
 
@@ -31,6 +30,7 @@ pub struct Cancel<'info> {
 pub fn handle_cancel(ctx: Context<Cancel>) -> Result<()> {
     let amount = ctx.accounts.bounty.amount;
     ctx.accounts.bounty.status = BountyStatus::Cancelled;
-    msg!("Bounty cancelled; {} lamports (+ rent) refunded", amount);
+    // Vault closed to creator (escrow + rent). Bounty account kept for history.
+    msg!("Bounty cancelled; {} lamports (+ vault rent) refunded", amount);
     Ok(())
 }
