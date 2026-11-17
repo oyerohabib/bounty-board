@@ -61,6 +61,37 @@
           }
         },
         {
+          "name": "submission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  117,
+                  98,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "hunter"
+              }
+            ]
+          }
+        },
+        {
           "name": "vault",
           "writable": true,
           "pda": {
@@ -243,6 +274,14 @@
         {
           "name": "deadline",
           "type": "i64"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
         }
       ]
     },
@@ -325,6 +364,65 @@
       "args": []
     },
     {
+      "name": "reclaim_submission",
+      "discriminator": [
+        206,
+        188,
+        132,
+        90,
+        194,
+        200,
+        50,
+        143
+      ],
+      "accounts": [
+        {
+          "name": "hunter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bounty",
+          "docs": [
+            "After accept/cancel/expire the bounty account is closed."
+          ],
+          "writable": true
+        },
+        {
+          "name": "submission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  117,
+                  98,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "hunter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "submit_work",
       "discriminator": [
         158,
@@ -339,6 +437,7 @@
       "accounts": [
         {
           "name": "hunter",
+          "writable": true,
           "signer": true
         },
         {
@@ -369,6 +468,41 @@
               }
             ]
           }
+        },
+        {
+          "name": "submission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  117,
+                  98,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "hunter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -391,6 +525,19 @@
         69,
         242,
         234
+      ]
+    },
+    {
+      "name": "Submission",
+      "discriminator": [
+        58,
+        194,
+        159,
+        158,
+        75,
+        102,
+        178,
+        197
       ]
     },
     {
@@ -426,7 +573,7 @@
     {
       "code": 6003,
       "name": "NoSubmission",
-      "msg": "Bounty has no active submission"
+      "msg": "Bounty has no submissions to accept"
     },
     {
       "code": 6004,
@@ -451,7 +598,27 @@
     {
       "code": 6008,
       "name": "UriTooLong",
-      "msg": "Submission URI is too long"
+      "msg": "Submission URI is too long or empty"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidTitle",
+      "msg": "Title is empty or too long"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidDescription",
+      "msg": "Description is empty or too long"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidSubmission",
+      "msg": "Submission account does not match hunter and bounty"
+    },
+    {
+      "code": 6012,
+      "name": "BountyStillOpen",
+      "msg": "Cannot reclaim while the bounty is still open"
     }
   ],
   "types": [
@@ -485,11 +652,15 @@
             }
           },
           {
-            "name": "hunter",
-            "type": "pubkey"
+            "name": "submission_count",
+            "type": "u32"
           },
           {
-            "name": "submission_uri",
+            "name": "title",
+            "type": "string"
+          },
+          {
+            "name": "description",
             "type": "string"
           },
           {
@@ -512,9 +683,6 @@
             "name": "Open"
           },
           {
-            "name": "Submitted"
-          },
-          {
             "name": "Completed"
           },
           {
@@ -522,6 +690,33 @@
           },
           {
             "name": "Expired"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Submission",
+      "docs": [
+        "One submission per hunter for a given bounty."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "hunter",
+            "type": "pubkey"
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -542,6 +737,11 @@
       "name": "BOUNTY_SEED",
       "type": "bytes",
       "value": "[98, 111, 117, 110, 116, 121]"
+    },
+    {
+      "name": "SUBMISSION_SEED",
+      "type": "bytes",
+      "value": "[115, 117, 98, 109, 105, 115, 115, 105, 111, 110]"
     },
     {
       "name": "VAULT_SEED",

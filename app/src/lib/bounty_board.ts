@@ -67,6 +67,37 @@ export type BountyBoard = {
           }
         },
         {
+          "name": "submission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  117,
+                  98,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "hunter"
+              }
+            ]
+          }
+        },
+        {
           "name": "vault",
           "writable": true,
           "pda": {
@@ -249,6 +280,14 @@ export type BountyBoard = {
         {
           "name": "deadline",
           "type": "i64"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
         }
       ]
     },
@@ -331,6 +370,65 @@ export type BountyBoard = {
       "args": []
     },
     {
+      "name": "reclaimSubmission",
+      "discriminator": [
+        206,
+        188,
+        132,
+        90,
+        194,
+        200,
+        50,
+        143
+      ],
+      "accounts": [
+        {
+          "name": "hunter",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bounty",
+          "docs": [
+            "After accept/cancel/expire the bounty account is closed."
+          ],
+          "writable": true
+        },
+        {
+          "name": "submission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  117,
+                  98,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "hunter"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "submitWork",
       "discriminator": [
         158,
@@ -345,6 +443,7 @@ export type BountyBoard = {
       "accounts": [
         {
           "name": "hunter",
+          "writable": true,
           "signer": true
         },
         {
@@ -375,6 +474,41 @@ export type BountyBoard = {
               }
             ]
           }
+        },
+        {
+          "name": "submission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  117,
+                  98,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "hunter"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
@@ -397,6 +531,19 @@ export type BountyBoard = {
         69,
         242,
         234
+      ]
+    },
+    {
+      "name": "submission",
+      "discriminator": [
+        58,
+        194,
+        159,
+        158,
+        75,
+        102,
+        178,
+        197
       ]
     },
     {
@@ -432,7 +579,7 @@ export type BountyBoard = {
     {
       "code": 6003,
       "name": "noSubmission",
-      "msg": "Bounty has no active submission"
+      "msg": "Bounty has no submissions to accept"
     },
     {
       "code": 6004,
@@ -457,7 +604,27 @@ export type BountyBoard = {
     {
       "code": 6008,
       "name": "uriTooLong",
-      "msg": "Submission URI is too long"
+      "msg": "Submission URI is too long or empty"
+    },
+    {
+      "code": 6009,
+      "name": "invalidTitle",
+      "msg": "Title is empty or too long"
+    },
+    {
+      "code": 6010,
+      "name": "invalidDescription",
+      "msg": "Description is empty or too long"
+    },
+    {
+      "code": 6011,
+      "name": "invalidSubmission",
+      "msg": "Submission account does not match hunter and bounty"
+    },
+    {
+      "code": 6012,
+      "name": "bountyStillOpen",
+      "msg": "Cannot reclaim while the bounty is still open"
     }
   ],
   "types": [
@@ -491,11 +658,15 @@ export type BountyBoard = {
             }
           },
           {
-            "name": "hunter",
-            "type": "pubkey"
+            "name": "submissionCount",
+            "type": "u32"
           },
           {
-            "name": "submissionUri",
+            "name": "title",
+            "type": "string"
+          },
+          {
+            "name": "description",
             "type": "string"
           },
           {
@@ -518,9 +689,6 @@ export type BountyBoard = {
             "name": "open"
           },
           {
-            "name": "submitted"
-          },
-          {
             "name": "completed"
           },
           {
@@ -528,6 +696,33 @@ export type BountyBoard = {
           },
           {
             "name": "expired"
+          }
+        ]
+      }
+    },
+    {
+      "name": "submission",
+      "docs": [
+        "One submission per hunter for a given bounty."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "hunter",
+            "type": "pubkey"
+          },
+          {
+            "name": "uri",
+            "type": "string"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -548,6 +743,11 @@ export type BountyBoard = {
       "name": "bountySeed",
       "type": "bytes",
       "value": "[98, 111, 117, 110, 116, 121]"
+    },
+    {
+      "name": "submissionSeed",
+      "type": "bytes",
+      "value": "[115, 117, 98, 109, 105, 115, 115, 105, 111, 110]"
     },
     {
       "name": "vaultSeed",
