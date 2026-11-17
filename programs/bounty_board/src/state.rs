@@ -23,6 +23,8 @@ pub struct Bounty {
     pub title: String,
     #[max_len(MAX_DESCRIPTION_LEN)]
     pub description: String,
+    /// Set on accept; default pubkey until then.
+    pub winner: Pubkey,
     pub bump: u8,
     pub vault_bump: u8,
 }
@@ -35,6 +37,16 @@ pub struct Submission {
     pub hunter: Pubkey,
     #[max_len(MAX_URI_LEN)]
     pub uri: String,
+    pub submitted_at: i64,
+    pub bump: u8,
+}
+
+/// Enforces unique submission URIs per bounty.
+#[account]
+#[derive(InitSpace)]
+pub struct UriClaim {
+    pub bounty: Pubkey,
+    pub hunter: Pubkey,
     pub bump: u8,
 }
 

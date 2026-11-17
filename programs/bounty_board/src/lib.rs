@@ -33,8 +33,12 @@ pub mod bounty_board {
         )
     }
 
-    pub fn submit_work(ctx: Context<SubmitWork>, submission_uri: String) -> Result<()> {
-        instructions::submit_work::handle_submit_work(ctx, submission_uri)
+    pub fn submit_work(
+        ctx: Context<SubmitWork>,
+        submission_uri: String,
+        uri_hash: [u8; 32],
+    ) -> Result<()> {
+        instructions::submit_work::handle_submit_work(ctx, submission_uri, uri_hash)
     }
 
     pub fn accept(ctx: Context<Accept>) -> Result<()> {
@@ -49,7 +53,7 @@ pub mod bounty_board {
         instructions::expire_refund::handle_expire_refund(ctx)
     }
 
-    pub fn reclaim_submission(ctx: Context<ReclaimSubmission>) -> Result<()> {
-        instructions::reclaim_submission::handle_reclaim_submission(ctx)
+    pub fn reclaim_submission(ctx: Context<ReclaimSubmission>, uri_hash: [u8; 32]) -> Result<()> {
+        instructions::reclaim_submission::handle_reclaim_submission(ctx, uri_hash)
     }
 }

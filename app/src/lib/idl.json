@@ -62,7 +62,6 @@
         },
         {
           "name": "submission",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -383,10 +382,31 @@
         },
         {
           "name": "bounty",
-          "docs": [
-            "After accept/cancel/expire the bounty account is closed."
-          ],
-          "writable": true
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  117,
+                  110,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty.creator",
+                "account": "Bounty"
+              },
+              {
+                "kind": "account",
+                "path": "bounty.bounty_id",
+                "account": "Bounty"
+              }
+            ]
+          }
         },
         {
           "name": "submission",
@@ -418,9 +438,43 @@
               }
             ]
           }
+        },
+        {
+          "name": "uri_claim",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  114,
+                  105
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "arg",
+                "path": "uri_hash"
+              }
+            ]
+          }
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "uri_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "submit_work",
@@ -501,6 +555,41 @@
           }
         },
         {
+          "name": "uri_claim",
+          "docs": [
+            "Claim PDA for the new/current URI (unique per bounty)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  114,
+                  105
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "arg",
+                "path": "uri_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "old_uri_claim",
+          "docs": [
+            "Previous URI claim when the hunter changes their link."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -509,6 +598,15 @@
         {
           "name": "submission_uri",
           "type": "string"
+        },
+        {
+          "name": "uri_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
         }
       ]
     }
@@ -538,6 +636,19 @@
         102,
         178,
         197
+      ]
+    },
+    {
+      "name": "UriClaim",
+      "discriminator": [
+        66,
+        105,
+        164,
+        239,
+        68,
+        15,
+        146,
+        26
       ]
     },
     {
@@ -619,6 +730,21 @@
       "code": 6012,
       "name": "BountyStillOpen",
       "msg": "Cannot reclaim while the bounty is still open"
+    },
+    {
+      "code": 6013,
+      "name": "UriAlreadyClaimed",
+      "msg": "This submission URI is already claimed on this bounty"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidUriHash",
+      "msg": "URI hash does not match the submission URI"
+    },
+    {
+      "code": 6015,
+      "name": "CannotReclaimWinner",
+      "msg": "Winning submission cannot be reclaimed"
     }
   ],
   "types": [
@@ -662,6 +788,13 @@
           {
             "name": "description",
             "type": "string"
+          },
+          {
+            "name": "winner",
+            "docs": [
+              "Set on accept; default pubkey until then."
+            ],
+            "type": "pubkey"
           },
           {
             "name": "bump",
@@ -715,6 +848,33 @@
             "type": "string"
           },
           {
+            "name": "submitted_at",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UriClaim",
+      "docs": [
+        "Enforces unique submission URIs per bounty."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "hunter",
+            "type": "pubkey"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -742,6 +902,11 @@
       "name": "SUBMISSION_SEED",
       "type": "bytes",
       "value": "[115, 117, 98, 109, 105, 115, 115, 105, 111, 110]"
+    },
+    {
+      "name": "URI_SEED",
+      "type": "bytes",
+      "value": "[117, 114, 105]"
     },
     {
       "name": "VAULT_SEED",

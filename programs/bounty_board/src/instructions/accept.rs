@@ -19,18 +19,15 @@ pub struct Accept<'info> {
         bump = bounty.bump,
         has_one = creator @ BountyError::UnauthorizedCreator,
         constraint = bounty.status == BountyStatus::Open @ BountyError::NotOpen,
-        constraint = bounty.submission_count > 0 @ BountyError::NoSubmission,
-        close = creator
+        constraint = bounty.submission_count > 0 @ BountyError::NoSubmission
     )]
     pub bounty: Account<'info, Bounty>,
 
     #[account(
-        mut,
         seeds = [SUBMISSION_SEED, bounty.key().as_ref(), hunter.key().as_ref()],
         bump = submission.bump,
         constraint = submission.bounty == bounty.key() @ BountyError::InvalidSubmission,
-        constraint = submission.hunter == hunter.key() @ BountyError::InvalidSubmission,
-        close = hunter
+        constraint = submission.hunter == hunter.key() @ BountyError::InvalidSubmission
     )]
     pub submission: Account<'info, Submission>,
 
@@ -46,6 +43,8 @@ pub struct Accept<'info> {
 pub fn handle_accept(ctx: Context<Accept>) -> Result<()> {
     let amount = ctx.accounts.bounty.amount;
     ctx.accounts.bounty.status = BountyStatus::Completed;
+    ctx.accounts.bounty.winner = ctx.accounts.hunter.key();
+    // Vault closed to hunter (escrow + vault rent). Bounty + submission kept for history.
     msg!(
         "Bounty accepted; vault (~{} lamports + rent) paid to {}",
         amount,

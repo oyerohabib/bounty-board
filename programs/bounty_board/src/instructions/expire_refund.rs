@@ -17,8 +17,7 @@ pub struct ExpireRefund<'info> {
         mut,
         seeds = [BOUNTY_SEED, bounty.creator.as_ref(), &bounty.bounty_id.to_le_bytes()],
         bump = bounty.bump,
-        constraint = bounty.status == BountyStatus::Open @ BountyError::CannotExpire,
-        close = creator
+        constraint = bounty.status == BountyStatus::Open @ BountyError::CannotExpire
     )]
     pub bounty: Account<'info, Bounty>,
 
@@ -40,8 +39,9 @@ pub fn handle_expire_refund(ctx: Context<ExpireRefund>) -> Result<()> {
 
     let amount = ctx.accounts.bounty.amount;
     ctx.accounts.bounty.status = BountyStatus::Expired;
+    // Vault closed to creator (escrow + rent). Bounty account kept for history.
     msg!(
-        "Bounty expired; {} lamports (+ rent) refunded to creator",
+        "Bounty expired; {} lamports (+ vault rent) refunded to creator",
         amount
     );
     Ok(())

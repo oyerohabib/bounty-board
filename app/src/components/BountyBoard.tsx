@@ -14,13 +14,23 @@ import {
   bountyPda,
   vaultPda,
   submissionPda,
+  uriClaimPda,
+  uriHashBytes,
   statusLabel,
+  isOpenStatus,
   formatTxError,
   rpcWithSim,
+  type RpcOutcome,
   MAX_URI_LEN,
   SUBMISSION_RENT_SOL,
   SystemProgram,
 } from "@/lib/program";
+
+function formatSubmittedAt(ts: BN | number): string {
+  const n = typeof ts === "number" ? ts : ts.toNumber();
+  if (!n) return "—";
+  return new Date(n * 1000).toLocaleString();
+}
 
 export default function BountyBoard() {
   const { connection } = useConnection();
@@ -30,8 +40,10 @@ export default function BountyBoard() {
   const [bounties, setBounties] = useState<BountyAccount[]>([]);
   const [submissions, setSubmissions] = useState<SubmissionAccount[]>([]);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [txMsg, setTxMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [staleNote, setStaleNote] = useState<string | null>(null);
   const [balanceSol, setBalanceSol] = useState<number | null>(null);
 
   const [title, setTitle] = useState("");
@@ -48,22 +60,47 @@ export default function BountyBoard() {
       list.push(s);
       map.set(key, list);
     }
+    for (const [, list] of map) {
+      list.sort(
+        (a, b) =>
+          a.account.submittedAt.toNumber() - b.account.submittedAt.toNumber()
+      );
+    }
     return map;
   }, [submissions]);
 
-  const openBountyKeys = useMemo(
-    () => new Set(bounties.map((b) => b.publicKey.toBase58())),
+  const bountyByKey = useMemo(() => {
+    const map = new Map<string, BountyAccount>();
+    for (const b of bounties) map.set(b.publicKey.toBase58(), b);
+    return map;
+  }, [bounties]);
+
+  const openBounties = useMemo(
+    () => bounties.filter((b) => isOpenStatus(b.account.status)),
+    [bounties]
+  );
+
+  const historyBounties = useMemo(
+    () => bounties.filter((b) => !isOpenStatus(b.account.status)),
     [bounties]
   );
 
   const reclaimable = useMemo(() => {
     if (!publicKey) return [] as SubmissionAccount[];
-    return submissions.filter(
-      (s) =>
-        s.account.hunter.equals(publicKey) &&
-        !openBountyKeys.has(s.account.bounty.toBase58())
-    );
-  }, [submissions, publicKey, openBountyKeys]);
+    return submissions.filter((s) => {
+      if (!s.account.hunter.equals(publicKey)) return false;
+      const bounty = bountyByKey.get(s.account.bounty.toBase58());
+      if (!bounty || isOpenStatus(bounty.account.status)) return false;
+      // Winner's submission stays for history
+      if (
+        !bounty.account.winner.equals(PublicKey.default) &&
+        bounty.account.winner.equals(publicKey)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [submissions, publicKey, bountyByKey]);
 
   const refresh = useCallback(async () => {
     if (!wallet || !publicKey) {
@@ -72,17 +109,28 @@ export default function BountyBoard() {
       setBalanceSol(null);
       return;
     }
+    setRefreshing(true);
     try {
       const lamports = await connection.getBalance(publicKey);
       setBalanceSol(lamports / 1e9);
       const program = getProgram(getProvider(wallet));
-      const { bounties: bountyRows, submissions: submissionRows } =
-        await fetchBoardAccounts(program);
+      const {
+        bounties: bountyRows,
+        submissions: submissionRows,
+        skippedStale,
+      } = await fetchBoardAccounts(program);
       setBounties(bountyRows);
       setSubmissions(submissionRows);
+      setStaleNote(
+        skippedStale > 0
+          ? `${skippedStale} older on-chain account${skippedStale === 1 ? "" : "s"} hidden (pre-upgrade layout). Create a new bounty to use the board.`
+          : null
+      );
     } catch (e) {
       console.error(e);
       setError(e instanceof Error ? e.message : "Failed to fetch bounties");
+    } finally {
+      setRefreshing(false);
     }
   }, [wallet, publicKey, connection]);
 
@@ -90,13 +138,17 @@ export default function BountyBoard() {
     void refresh();
   }, [refresh, connected]);
 
-  async function withTx(label: string, fn: () => Promise<string>) {
+  async function withTx(label: string, fn: () => Promise<RpcOutcome>) {
     setBusy(true);
     setError(null);
     setTxMsg(null);
     try {
-      const sig = await fn();
-      setTxMsg(`${label}: ${sig}`);
+      const result = await fn();
+      if (!result.ok) {
+        setError(result.message);
+        return;
+      }
+      setTxMsg(`${label}: ${result.signature}`);
       await refresh();
     } catch (e) {
       const msg = formatTxError(e);
@@ -146,10 +198,17 @@ export default function BountyBoard() {
           vault,
           systemProgram: SystemProgram.programId,
         });
-      const sig = await rpcWithSim(builder, publicKey, connection, sendTransaction);
-      setTitle("");
-      setDescription("");
-      return sig;
+      const result = await rpcWithSim(
+        builder,
+        publicKey,
+        connection,
+        sendTransaction
+      );
+      if (result.ok) {
+        setTitle("");
+        setDescription("");
+      }
+      return result;
     });
   }
 
@@ -166,21 +225,45 @@ export default function BountyBoard() {
     }
     if (balanceSol !== null && balanceSol < SUBMISSION_RENT_SOL) {
       setError(
-        `Hunter wallet needs ~${SUBMISSION_RENT_SOL} SOL free for the submission account rent (you have ${balanceSol.toFixed(4)} SOL).`
+        `Hunter wallet needs ~${SUBMISSION_RENT_SOL} SOL free for submission + URI claim rent (you have ${balanceSol.toFixed(4)} SOL).`
       );
       return;
     }
 
     const [submission] = submissionPda(row.publicKey, publicKey);
+    const [uriClaim] = uriClaimPda(row.publicKey, uri);
+    const hash = uriHashBytes(uri);
+
     await withTx("Submitted", async () => {
       const program = getProgram(getProvider(wallet));
-      const builder = program.methods.submitWork(uri).accountsPartial({
-        hunter: publicKey,
-        bounty: row.publicKey,
-        submission,
-        systemProgram: SystemProgram.programId,
-      });
-      return rpcWithSim(builder, publicKey, connection, sendTransaction);
+      let oldUriClaim: PublicKey | null = null;
+      try {
+        const existing = await program.account.submission.fetchNullable(submission);
+        if (existing && existing.uri !== uri) {
+          oldUriClaim = uriClaimPda(row.publicKey, existing.uri)[0];
+        }
+      } catch {
+        /* first submit */
+      }
+
+      const builder = program.methods
+        .submitWork(uri, hash)
+        .accountsPartial({
+          hunter: publicKey,
+          bounty: row.publicKey,
+          submission,
+          uriClaim,
+          oldUriClaim,
+          systemProgram: SystemProgram.programId,
+        });
+      const result = await rpcWithSim(
+        builder,
+        publicKey,
+        connection,
+        sendTransaction
+      );
+      if (result.ok) setSubmitUri("");
+      return result;
     });
   }
 
@@ -232,18 +315,164 @@ export default function BountyBoard() {
 
   async function onReclaim(sub: SubmissionAccount) {
     if (!wallet || !publicKey) return;
+    const [uriClaim] = uriClaimPda(sub.account.bounty, sub.account.uri);
+    const hash = uriHashBytes(sub.account.uri);
     await withTx("Reclaimed", async () => {
       const program = getProgram(getProvider(wallet));
-      const builder = program.methods.reclaimSubmission().accountsPartial({
-        hunter: publicKey,
-        bounty: sub.account.bounty,
-        submission: sub.publicKey,
-      });
+      const builder = program.methods
+        .reclaimSubmission(hash)
+        .accountsPartial({
+          hunter: publicKey,
+          bounty: sub.account.bounty,
+          submission: sub.publicKey,
+          uriClaim,
+        });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
 
   const now = Math.floor(Date.now() / 1000);
+
+  function renderBountyCard(b: BountyAccount, opts: { history?: boolean }) {
+    const key = b.publicKey.toBase58();
+    const status = statusLabel(b.account.status);
+    const isCreator = publicKey && b.account.creator.equals(publicKey);
+    const deadline = b.account.deadline.toNumber();
+    const expired = now >= deadline;
+    const isOpen = isOpenStatus(b.account.status);
+    const subs = submissionsByBounty.get(key) ?? [];
+    const hasWinner =
+      !b.account.winner.equals(PublicKey.default) &&
+      status === "Completed";
+
+    return (
+      <li
+        key={key}
+        className="border-b border-stone-200 pb-6 last:border-0"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="text-lg font-medium text-stone-900">
+              {b.account.title || `Bounty #${b.account.bountyId.toString()}`}
+            </h3>
+            <p className="mt-1 text-sm text-stone-600">
+              {b.account.description || "No description"}
+            </p>
+          </div>
+          <span className="rounded bg-stone-100 px-2 py-1 text-xs uppercase tracking-wide text-stone-700">
+            {status}
+            {isOpen && subs.length > 0
+              ? ` · ${subs.length} submission${subs.length === 1 ? "" : "s"}`
+              : ""}
+          </span>
+        </div>
+        <dl className="mt-3 grid gap-1 text-sm text-stone-600 sm:grid-cols-2">
+          <div>
+            Reward:{" "}
+            <strong className="text-stone-900">
+              {(b.account.amount.toNumber() / 1e9).toFixed(3)} SOL
+            </strong>
+          </div>
+          <div className="sm:text-right">
+            Deadline: {new Date(deadline * 1000).toLocaleString()}
+          </div>
+          {hasWinner && (
+            <div className="sm:col-span-2 break-all">
+              Winner: {b.account.winner.toBase58()}
+            </div>
+          )}
+          <div className="sm:col-span-2 break-all">
+            Creator: {b.account.creator.toBase58()}
+          </div>
+        </dl>
+
+        {subs.length > 0 && (
+          <ul className="mt-3 space-y-2 rounded border border-stone-200 bg-white/60 p-3">
+            {subs.map((s) => {
+              const mine = publicKey && s.account.hunter.equals(publicKey);
+              const isWinner =
+                hasWinner && b.account.winner.equals(s.account.hunter);
+              return (
+                <li
+                  key={s.publicKey.toBase58()}
+                  className="flex flex-wrap items-start justify-between gap-2 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="break-all text-stone-800">
+                      <a
+                        href={s.account.uri}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-teal-800 underline"
+                      >
+                        {s.account.uri}
+                      </a>
+                      {mine ? " · you" : ""}
+                      {isWinner ? " · winner" : ""}
+                    </p>
+                    <p className="mt-0.5 text-xs text-stone-500">
+                      Submitted {formatSubmittedAt(s.account.submittedAt)}
+                    </p>
+                    <p className="mt-0.5 break-all text-xs text-stone-500">
+                      {s.account.hunter.toBase58()}
+                    </p>
+                  </div>
+                  {isCreator && isOpen && !opts.history && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void onAccept(b, s)}
+                      className="shrink-0 rounded bg-teal-800 px-3 py-1.5 text-sm text-white disabled:opacity-40"
+                    >
+                      Accept & pay
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {!opts.history && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {isOpen && !isCreator && (
+              <button
+                type="button"
+                disabled={busy || !submitUri || expired}
+                onClick={() => void onSubmit(b)}
+                className="rounded border border-teal-800 px-3 py-1.5 text-sm text-teal-900 disabled:opacity-40"
+              >
+                Submit work
+              </button>
+            )}
+            {isCreator && isOpen && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onCancel(b)}
+                className="rounded border border-stone-400 px-3 py-1.5 text-sm text-stone-700 disabled:opacity-40"
+              >
+                Cancel & refund
+              </button>
+            )}
+            {isOpen && expired && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onExpire(b)}
+                className="rounded border border-amber-700 px-3 py-1.5 text-sm text-amber-900 disabled:opacity-40"
+              >
+                Expire refund
+              </button>
+            )}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-stone-400 break-all">
+          {key} · {connection.rpcEndpoint}
+        </p>
+      </li>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
@@ -315,6 +544,11 @@ export default function BountyBoard() {
       {error && (
         <p className="mb-4 break-all rounded bg-red-50 px-3 py-2 text-sm text-red-800">
           {error}
+        </p>
+      )}
+      {staleNote && (
+        <p className="mb-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-950">
+          {staleNote}
         </p>
       )}
 
@@ -412,9 +646,10 @@ export default function BountyBoard() {
               <button
                 type="button"
                 onClick={() => void refresh()}
-                className="text-sm text-teal-800 underline"
+                disabled={refreshing}
+                className="text-sm text-teal-800 underline disabled:opacity-50"
               >
-                Refresh
+                {refreshing ? "Refreshing…" : "Refresh"}
               </button>
             </div>
 
@@ -428,144 +663,34 @@ export default function BountyBoard() {
                 maxLength={MAX_URI_LEN}
               />
               <span className="mt-1 block text-xs text-stone-500">
-                Paste a link (max {MAX_URI_LEN} chars), then Submit work on a
-                bounty. Use a hunter account (not the creator) with ≥
-                {SUBMISSION_RENT_SOL} SOL for rent. Creator picks which
-                submission to pay.
+                Each URI must be unique per bounty (max {MAX_URI_LEN} chars).
+                Hunter needs ≥{SUBMISSION_RENT_SOL} SOL for rent. Creator picks
+                which submission to pay.
               </span>
             </label>
 
-            {bounties.length === 0 ? (
-              <p className="text-stone-500">No bounties on-chain yet.</p>
+            {openBounties.length === 0 ? (
+              <p className="text-stone-500">No open bounties on-chain.</p>
             ) : (
               <ul className="space-y-6">
-                {bounties.map((b) => {
-                  const key = b.publicKey.toBase58();
-                  const status = statusLabel(b.account.status);
-                  const isCreator =
-                    publicKey && b.account.creator.equals(publicKey);
-                  const deadline = b.account.deadline.toNumber();
-                  const expired = now >= deadline;
-                  const isOpen = status === "Open";
-                  const subs = submissionsByBounty.get(key) ?? [];
+                {openBounties.map((b) => renderBountyCard(b, {}))}
+              </ul>
+            )}
+          </section>
 
-                  return (
-                    <li
-                      key={key}
-                      className="border-b border-stone-200 pb-6 last:border-0"
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <h3 className="text-lg font-medium text-stone-900">
-                            {b.account.title || `Bounty #${b.account.bountyId.toString()}`}
-                          </h3>
-                          <p className="mt-1 text-sm text-stone-600">
-                            {b.account.description || "No description"}
-                          </p>
-                        </div>
-                        <span className="rounded bg-stone-100 px-2 py-1 text-xs uppercase tracking-wide text-stone-700">
-                          {status}
-                          {isOpen && subs.length > 0
-                            ? ` · ${subs.length} submission${subs.length === 1 ? "" : "s"}`
-                            : ""}
-                        </span>
-                      </div>
-                      <dl className="mt-3 grid gap-1 text-sm text-stone-600 sm:grid-cols-2">
-                        <div>
-                          Reward:{" "}
-                          <strong className="text-stone-900">
-                            {(b.account.amount.toNumber() / 1e9).toFixed(3)} SOL
-                          </strong>
-                        </div>
-                        <div>
-                          Deadline:{" "}
-                          {new Date(deadline * 1000).toLocaleString()}
-                        </div>
-                        <div className="sm:col-span-2 break-all">
-                          Creator: {b.account.creator.toBase58()}
-                        </div>
-                      </dl>
-
-                      {subs.length > 0 && (
-                        <ul className="mt-3 space-y-2 rounded border border-stone-200 bg-white/60 p-3">
-                          {subs.map((s) => {
-                            const mine =
-                              publicKey && s.account.hunter.equals(publicKey);
-                            return (
-                              <li
-                                key={s.publicKey.toBase58()}
-                                className="flex flex-wrap items-start justify-between gap-2 text-sm"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <p className="break-all text-stone-800">
-                                    <a
-                                      href={s.account.uri}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="text-teal-800 underline"
-                                    >
-                                      {s.account.uri}
-                                    </a>
-                                    {mine ? " · you" : ""}
-                                  </p>
-                                  <p className="mt-0.5 break-all text-xs text-stone-500">
-                                    {s.account.hunter.toBase58()}
-                                  </p>
-                                </div>
-                                {isCreator && isOpen && (
-                                  <button
-                                    type="button"
-                                    disabled={busy}
-                                    onClick={() => void onAccept(b, s)}
-                                    className="shrink-0 rounded bg-teal-800 px-3 py-1.5 text-sm text-white disabled:opacity-40"
-                                  >
-                                    Accept & pay
-                                  </button>
-                                )}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
-
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {isOpen && !isCreator && (
-                          <button
-                            type="button"
-                            disabled={busy || !submitUri || expired}
-                            onClick={() => void onSubmit(b)}
-                            className="rounded border border-teal-800 px-3 py-1.5 text-sm text-teal-900 disabled:opacity-40"
-                          >
-                            Submit work
-                          </button>
-                        )}
-                        {isCreator && isOpen && (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void onCancel(b)}
-                            className="rounded border border-stone-400 px-3 py-1.5 text-sm text-stone-700 disabled:opacity-40"
-                          >
-                            Cancel & refund
-                          </button>
-                        )}
-                        {isOpen && expired && (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void onExpire(b)}
-                            className="rounded border border-amber-700 px-3 py-1.5 text-sm text-amber-900 disabled:opacity-40"
-                          >
-                            Expire refund
-                          </button>
-                        )}
-                      </div>
-                      <p className="mt-2 text-xs text-stone-400 break-all">
-                        {key} · {connection.rpcEndpoint}
-                      </p>
-                    </li>
-                  );
-                })}
+          <section className="mt-10 border-t border-stone-200 pt-8">
+            <h2 className="font-display text-2xl text-stone-900">History</h2>
+            <p className="mt-1 text-sm text-stone-600">
+              Completed, cancelled, and expired bounties stay on-chain with their
+              submissions.
+            </p>
+            {historyBounties.length === 0 ? (
+              <p className="mt-4 text-stone-500">No settled bounties yet.</p>
+            ) : (
+              <ul className="mt-4 space-y-6">
+                {historyBounties.map((b) =>
+                  renderBountyCard(b, { history: true })
+                )}
               </ul>
             )}
           </section>
@@ -576,8 +701,8 @@ export default function BountyBoard() {
                 Reclaim submission rent
               </h2>
               <p className="mt-1 text-sm text-stone-600">
-                These submissions belong to closed bounties. Close them to recover
-                rent.
+                Non-winning submissions on settled bounties. Close them to recover
+                rent (and free the URI claim).
               </p>
               <ul className="mt-4 space-y-3">
                 {reclaimable.map((s) => (
@@ -588,7 +713,8 @@ export default function BountyBoard() {
                     <span className="break-all text-stone-700">
                       {s.account.uri}{" "}
                       <span className="text-stone-400">
-                        (bounty {s.account.bounty.toBase58().slice(0, 8)}…)
+                        · {formatSubmittedAt(s.account.submittedAt)} · bounty{" "}
+                        {s.account.bounty.toBase58().slice(0, 8)}…
                       </span>
                     </span>
                     <button

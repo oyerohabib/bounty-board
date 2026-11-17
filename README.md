@@ -16,11 +16,11 @@ Post bounties, lock SOL in escrow, and pay hunters when work lands — or cancel
 ## Instructions
 
 1. `create_bounty(bounty_id, amount, deadline, title, description)` — init bounty + vault PDAs, escrow SOL (title/description on-chain)  
-2. `submit_work(uri)` — hunter opens/updates their own Submission PDA (many hunters per bounty)  
-3. `accept` — creator picks a submission; vault pays that hunter; winning submission closes  
-4. `cancel` — creator refund while Open  
-5. `expire_refund` — anyone after deadline; refunds creator  
-6. `reclaim_submission` — hunter closes a leftover Submission after the bounty is closed (recover rent)  
+2. `submit_work(uri, uri_hash)` — hunter opens/updates their Submission PDA; `UriClaim` enforces **unique URIs per bounty**; records `submitted_at`  
+3. `accept` — creator picks a submission; vault pays that hunter; bounty + winning submission **stay on-chain** for history (`winner` set)  
+4. `cancel` — creator refund while Open (vault closed; bounty kept as Cancelled)  
+5. `expire_refund` — anyone after deadline; refunds creator (bounty kept as Expired)  
+6. `reclaim_submission(uri_hash)` — non-winning hunter closes Submission + UriClaim after the bounty is settled (recover rent)  
 
 ## Setup
 
@@ -84,9 +84,10 @@ anchor program deploy --provider.cluster devnet \
 
 1. Connect Phantom on **Devnet** (or localnet with matching RPC).
 2. Post a bounty (title, description, amount, and deadline are all on-chain).
-3. From other accounts, paste a submission URI → **Submit work** (each hunter keeps their own proof).
+3. From other accounts, paste a **unique** submission URI → **Submit work** (duplicate links on the same bounty are rejected).
 4. Creator picks a submission → **Accept & pay** (or **Cancel & refund** / **Expire refund** after deadline).
-5. Losing hunters can **Reclaim rent** on leftover submission accounts after the bounty closes.
+5. Settled bounties move to **History** (kept on-chain with timestamps and winner).
+6. Losing hunters can **Reclaim rent** on leftover submission + URI-claim accounts.
 
 **Note:** This schema change invalidates old on-chain bounties — redeploy after pulling (`anchor build` + `anchor program deploy`).
 

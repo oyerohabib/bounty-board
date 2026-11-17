@@ -21,3 +21,16 @@ body {
 .font-display {
   font-family: var(--font-display), Georgia, serif;
 }
+
+/* Affordance: connected wallet opens a dropdown (change / disconnect). */
+.wallet-btn-wrap.is-connected .wallet-adapter-button-trigger::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 0.45em;
+  margin-left: 0.55em;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-0.12em) rotate(45deg);
+  opacity: 0.85;
+}

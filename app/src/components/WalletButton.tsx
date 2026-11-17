@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 
 /** Wallet button only after mount — avoids SSR/client HTML mismatch. */
 export default function WalletButton() {
   const [ready, setReady] = useState(false);
+  const { connected } = useWallet();
 
   useEffect(() => {
     setReady(true);
@@ -23,5 +25,9 @@ export default function WalletButton() {
     );
   }
 
-  return <WalletMultiButton />;
+  return (
+    <div className={`wallet-btn-wrap${connected ? " is-connected" : ""}`}>
+      <WalletMultiButton />
+    </div>
+  );
 }

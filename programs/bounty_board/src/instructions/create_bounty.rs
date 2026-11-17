@@ -62,6 +62,7 @@ pub fn handle_create_bounty(
     bounty.submission_count = 0;
     bounty.title = title;
     bounty.description = description;
+    bounty.winner = Pubkey::default();
     bounty.bump = ctx.bumps.bounty;
     bounty.vault_bump = ctx.bumps.vault;
 
