@@ -8,6 +8,7 @@ use {
     litesvm::LiteSVM,
     solana_keypair::Keypair,
     solana_message::{Message, VersionedMessage},
+    solana_sha256_hasher::hash,
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
 };
@@ -24,6 +25,13 @@ fn send_ix(svm: &mut LiteSVM, payer: &Keypair, ix: Instruction) {
     let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[payer]).unwrap();
     svm.send_transaction(tx).expect("transaction failed");
+}
+
+fn send_ix_err(svm: &mut LiteSVM, payer: &Keypair, ix: Instruction) {
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[payer]).unwrap();
+    assert!(svm.send_transaction(tx).is_err());
 }
 
 fn bounty_pda(program_id: &Pubkey, creator: &Pubkey, bounty_id: u64) -> (Pubkey, u8) {
@@ -55,12 +63,38 @@ fn submission_pda(program_id: &Pubkey, bounty: &Pubkey, hunter: &Pubkey) -> (Pub
     )
 }
 
+fn uri_hash_bytes(uri: &str) -> [u8; 32] {
+    hash(uri.as_bytes()).to_bytes()
+}
+
+fn uri_claim_pda(program_id: &Pubkey, bounty: &Pubkey, uri: &str) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            bounty_board::constants::URI_SEED,
+            bounty.as_ref(),
+            &uri_hash_bytes(uri),
+        ],
+        program_id,
+    )
+}
+
 fn setup() -> (LiteSVM, Keypair, Pubkey) {
     let program_id = bounty_board::id();
     let payer = Keypair::new();
     let mut svm = LiteSVM::new();
     svm.add_program(program_id, program_bytes()).unwrap();
     svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
+    {
+        use anchor_lang::prelude::Clock;
+        let clock = Clock {
+            slot: 1,
+            epoch_start_timestamp: 1_700_000_000,
+            epoch: 0,
+            leader_schedule_epoch: 0,
+            unix_timestamp: 1_700_000_000,
+        };
+        let _ = svm.set_sysvar(&clock);
+    }
     (svm, payer, program_id)
 }
 
@@ -98,18 +132,24 @@ fn submit_work_ix(
     hunter: Pubkey,
     bounty: Pubkey,
     submission: Pubkey,
+    uri_claim: Pubkey,
+    old_uri_claim: Option<Pubkey>,
     uri: String,
 ) -> Instruction {
+    let uri_hash = uri_hash_bytes(&uri);
     Instruction::new_with_bytes(
         program_id,
         &bounty_board::instruction::SubmitWork {
             submission_uri: uri,
+            uri_hash,
         }
         .data(),
         bounty_board::accounts::SubmitWork {
             hunter,
             bounty,
             submission,
+            uri_claim,
+            old_uri_claim,
             system_program: system_program::ID,
         }
         .to_account_metas(None),
@@ -133,6 +173,13 @@ fn test_multi_submit_accept_reclaim() {
     let (sub_a, _) = submission_pda(&program_id, &bounty, &hunter_a.pubkey());
     let (sub_b, _) = submission_pda(&program_id, &bounty, &hunter_b.pubkey());
 
+    let uri_a = "https://github.com/example/pr/1";
+    let uri_a2 = "https://github.com/example/pr/1b";
+    let uri_b = "https://github.com/example/pr/2";
+    let (claim_a, _) = uri_claim_pda(&program_id, &bounty, uri_a);
+    let (claim_a2, _) = uri_claim_pda(&program_id, &bounty, uri_a2);
+    let (claim_b, _) = uri_claim_pda(&program_id, &bounty, uri_b);
+
     let hunter_b_before = svm.get_account(&hunter_b.pubkey()).unwrap().lamports;
 
     send_ix(
@@ -154,6 +201,7 @@ fn test_multi_submit_accept_reclaim() {
         let state = Bounty::try_deserialize(&mut data).unwrap();
         assert_eq!(state.title, "Fix login bug");
         assert_eq!(state.description, "PR that fixes auth redirect");
+        assert_eq!(state.winner, Pubkey::default());
     }
 
     send_ix(
@@ -164,7 +212,9 @@ fn test_multi_submit_accept_reclaim() {
             hunter_a.pubkey(),
             bounty,
             sub_a,
-            "https://github.com/example/pr/1".to_string(),
+            claim_a,
+            None,
+            uri_a.to_string(),
         ),
     );
     send_ix(
@@ -175,7 +225,9 @@ fn test_multi_submit_accept_reclaim() {
             hunter_b.pubkey(),
             bounty,
             sub_b,
-            "https://github.com/example/pr/2".to_string(),
+            claim_b,
+            None,
+            uri_b.to_string(),
         ),
     );
 
@@ -187,12 +239,24 @@ fn test_multi_submit_accept_reclaim() {
 
     let mut data_a: &[u8] = &svm.get_account(&sub_a).unwrap().data;
     let sub_state_a = Submission::try_deserialize(&mut data_a).unwrap();
-    assert_eq!(sub_state_a.uri, "https://github.com/example/pr/1");
+    assert_eq!(sub_state_a.uri, uri_a);
     assert_eq!(sub_state_a.hunter, hunter_a.pubkey());
+    assert!(sub_state_a.submitted_at > 0);
 
-    let mut data_b: &[u8] = &svm.get_account(&sub_b).unwrap().data;
-    let sub_state_b = Submission::try_deserialize(&mut data_b).unwrap();
-    assert_eq!(sub_state_b.uri, "https://github.com/example/pr/2");
+    // Duplicate URI rejected
+    send_ix_err(
+        &mut svm,
+        &hunter_b,
+        submit_work_ix(
+            program_id,
+            hunter_b.pubkey(),
+            bounty,
+            sub_b,
+            claim_a,
+            Some(claim_b),
+            uri_a.to_string(),
+        ),
+    );
 
     // Same hunter updates URI without bumping count
     send_ix(
@@ -203,7 +267,9 @@ fn test_multi_submit_accept_reclaim() {
             hunter_a.pubkey(),
             bounty,
             sub_a,
-            "https://github.com/example/pr/1b".to_string(),
+            claim_a2,
+            Some(claim_a),
+            uri_a2.to_string(),
         ),
     );
     let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
@@ -212,10 +278,12 @@ fn test_multi_submit_accept_reclaim() {
     let mut data_a: &[u8] = &svm.get_account(&sub_a).unwrap().data;
     assert_eq!(
         Submission::try_deserialize(&mut data_a).unwrap().uri,
-        "https://github.com/example/pr/1b"
+        uri_a2
     );
+    assert!(svm.get_account(&claim_a).is_none());
+    assert!(svm.get_account(&claim_a2).is_some());
 
-    // Accept hunter B
+    // Accept hunter B — bounty + winning submission kept for history
     send_ix(
         &mut svm,
         &creator,
@@ -233,31 +301,64 @@ fn test_multi_submit_accept_reclaim() {
         ),
     );
 
-    assert!(svm.get_account(&bounty).is_none());
+    assert!(svm.get_account(&bounty).is_some());
     assert!(svm.get_account(&vault).is_none());
-    assert!(svm.get_account(&sub_b).is_none());
+    assert!(svm.get_account(&sub_b).is_some());
     assert!(svm.get_account(&sub_a).is_some());
 
-    let hunter_b_after = svm.get_account(&hunter_b.pubkey()).unwrap().lamports;
-    assert!(hunter_b_after > hunter_b_before + amount);
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.status, BountyStatus::Completed);
+        assert_eq!(state.winner, hunter_b.pubkey());
+    }
 
-    // Hunter A reclaims leftover submission rent
+    let hunter_b_after = svm.get_account(&hunter_b.pubkey()).unwrap().lamports;
+    // Winner receives escrow (+ vault rent); rent paid for submission/uri_claim remains locked.
+    assert!(hunter_b_after > hunter_b_before + amount - 5_000_000);
+
+    // Winner cannot reclaim
+    send_ix_err(
+        &mut svm,
+        &hunter_b,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::ReclaimSubmission {
+                uri_hash: uri_hash_bytes(uri_b),
+            }
+            .data(),
+            bounty_board::accounts::ReclaimSubmission {
+                hunter: hunter_b.pubkey(),
+                bounty,
+                submission: sub_b,
+                uri_claim: claim_b,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    // Hunter A reclaims leftover submission + uri claim rent
     let hunter_a_before = svm.get_account(&hunter_a.pubkey()).unwrap().lamports;
     send_ix(
         &mut svm,
         &hunter_a,
         Instruction::new_with_bytes(
             program_id,
-            &bounty_board::instruction::ReclaimSubmission {}.data(),
+            &bounty_board::instruction::ReclaimSubmission {
+                uri_hash: uri_hash_bytes(uri_a2),
+            }
+            .data(),
             bounty_board::accounts::ReclaimSubmission {
                 hunter: hunter_a.pubkey(),
                 bounty,
                 submission: sub_a,
+                uri_claim: claim_a2,
             }
             .to_account_metas(None),
         ),
     );
     assert!(svm.get_account(&sub_a).is_none());
+    assert!(svm.get_account(&claim_a2).is_none());
     let hunter_a_after = svm.get_account(&hunter_a.pubkey()).unwrap().lamports;
     assert!(hunter_a_after > hunter_a_before);
 }
@@ -306,12 +407,19 @@ fn test_cancel_refunds_creator() {
         ),
     );
 
-    assert!(svm.get_account(&bounty).is_none());
+    // Bounty kept for history; vault closed (escrow refunded)
+    assert!(svm.get_account(&bounty).is_some());
     assert!(svm.get_account(&vault).is_none());
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.status, BountyStatus::Cancelled);
+    }
 
     let creator_after = svm.get_account(&creator.pubkey()).unwrap().lamports;
     assert!(creator_after > after_create);
-    assert!(creator_after > creator_before - 50_000);
+    // Escrow returned via vault close; bounty rent remains locked for history
+    assert!(creator_after + 5_000_000 > creator_before);
 }
 
 #[test]
@@ -326,7 +434,7 @@ fn test_expire_refund_after_deadline() {
     let (bounty, _) = bounty_pda(&program_id, &creator.pubkey(), bounty_id);
     let (vault, _) = vault_pda(&program_id, &bounty);
 
-    let future = 1_700_000_000i64;
+    let deadline = 1_700_000_100i64;
     send_ix(
         &mut svm,
         &creator,
@@ -337,7 +445,7 @@ fn test_expire_refund_after_deadline() {
             vault,
             bounty_id,
             amount,
-            future,
+            deadline,
         ),
     );
 
@@ -346,10 +454,10 @@ fn test_expire_refund_after_deadline() {
         use anchor_lang::prelude::Clock;
         let clock = Clock {
             slot: 100,
-            epoch_start_timestamp: future + 100,
+            epoch_start_timestamp: deadline + 100,
             epoch: 1,
             leader_schedule_epoch: 1,
-            unix_timestamp: future + 100,
+            unix_timestamp: deadline + 100,
         };
         let _ = svm.set_sysvar(&clock);
     }
@@ -370,6 +478,11 @@ fn test_expire_refund_after_deadline() {
         ),
     );
 
-    assert!(svm.get_account(&bounty).is_none());
+    assert!(svm.get_account(&bounty).is_some());
     assert!(svm.get_account(&vault).is_none());
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.status, BountyStatus::Expired);
+    }
 }
