@@ -1,18 +1,23 @@
 use anchor_lang::prelude::*;
+use solana_sha256_hasher::hash;
 
-use crate::constants::SUBMISSION_SEED;
+use crate::constants::{BOUNTY_SEED, SUBMISSION_SEED, URI_SEED};
 use crate::error::BountyError;
-use crate::state::Submission;
+use crate::state::{Bounty, BountyStatus, Submission, UriClaim};
 
 #[derive(Accounts)]
+#[instruction(uri_hash: [u8; 32])]
 pub struct ReclaimSubmission<'info> {
     #[account(mut)]
     pub hunter: Signer<'info>,
 
-    /// CHECK: bounty PDA — must be closed (lamports == 0 / no data) or we reject.
-    /// After accept/cancel/expire the bounty account is closed.
-    #[account(mut)]
-    pub bounty: UncheckedAccount<'info>,
+    #[account(
+        seeds = [BOUNTY_SEED, bounty.creator.as_ref(), &bounty.bounty_id.to_le_bytes()],
+        bump = bounty.bump,
+        constraint = bounty.status != BountyStatus::Open @ BountyError::BountyStillOpen,
+        constraint = bounty.winner != hunter.key() @ BountyError::CannotReclaimWinner
+    )]
+    pub bounty: Account<'info, Bounty>,
 
     #[account(
         mut,
@@ -23,16 +28,26 @@ pub struct ReclaimSubmission<'info> {
         close = hunter
     )]
     pub submission: Account<'info, Submission>,
+
+    #[account(
+        mut,
+        seeds = [URI_SEED, bounty.key().as_ref(), uri_hash.as_ref()],
+        bump = uri_claim.bump,
+        constraint = uri_claim.hunter == hunter.key() @ BountyError::InvalidSubmission,
+        constraint = uri_claim.bounty == bounty.key() @ BountyError::InvalidSubmission,
+        close = hunter
+    )]
+    pub uri_claim: Account<'info, UriClaim>,
 }
 
-pub fn handle_reclaim_submission(ctx: Context<ReclaimSubmission>) -> Result<()> {
-    // Bounty must already be closed (accept/cancel/expire). An open bounty still has data.
-    let bounty_info = ctx.accounts.bounty.to_account_info();
+pub fn handle_reclaim_submission(ctx: Context<ReclaimSubmission>, uri_hash: [u8; 32]) -> Result<()> {
     require!(
-        bounty_info.lamports() == 0 || bounty_info.data_is_empty(),
-        BountyError::BountyStillOpen
+        hash(ctx.accounts.submission.uri.as_bytes()).to_bytes() == uri_hash,
+        BountyError::InvalidUriHash
     );
-
-    msg!("Submission reclaimed by {}", ctx.accounts.hunter.key());
+    msg!(
+        "Submission reclaimed by {} (URI claim released)",
+        ctx.accounts.hunter.key()
+    );
     Ok(())
 }
