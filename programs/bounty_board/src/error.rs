@@ -8,7 +8,7 @@ pub enum BountyError {
     InvalidDeadline,
     #[msg("Bounty is not open for submissions")]
     NotOpen,
-    #[msg("Bounty has no active submission")]
+    #[msg("Bounty has no submissions to accept")]
     NoSubmission,
     #[msg("Only the bounty creator can perform this action")]
     UnauthorizedCreator,
@@ -18,6 +18,14 @@ pub enum BountyError {
     DeadlineNotReached,
     #[msg("Bounty is not eligible for expiry refund")]
     CannotExpire,
-    #[msg("Submission URI is too long")]
+    #[msg("Submission URI is too long or empty")]
     UriTooLong,
+    #[msg("Title is empty or too long")]
+    InvalidTitle,
+    #[msg("Description is empty or too long")]
+    InvalidDescription,
+    #[msg("Submission account does not match hunter and bounty")]
+    InvalidSubmission,
+    #[msg("Cannot reclaim while the bounty is still open")]
+    BountyStillOpen,
 }

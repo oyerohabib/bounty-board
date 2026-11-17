@@ -14,8 +14,7 @@ pub struct Cancel<'info> {
         seeds = [BOUNTY_SEED, creator.key().as_ref(), &bounty.bounty_id.to_le_bytes()],
         bump = bounty.bump,
         has_one = creator @ BountyError::UnauthorizedCreator,
-        constraint = bounty.status == BountyStatus::Open || bounty.status == BountyStatus::Submitted
-            @ BountyError::CannotCancel,
+        constraint = bounty.status == BountyStatus::Open @ BountyError::CannotCancel,
         close = creator
     )]
     pub bounty: Account<'info, Bounty>,

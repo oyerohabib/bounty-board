@@ -15,7 +15,7 @@ const body = Source_Sans_3({
 
 export const metadata: Metadata = {
   title: "Bounty Board · Solana",
-  description: "Mid-level Solana escrow bounty board on Devnet",
+  description: "Solana bounty board with Anchor escrow — post, submit, accept, or refund",
   icons: {
     icon: "/logo.png",
     apple: "/logo.png",
