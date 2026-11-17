@@ -1,6 +1,7 @@
 "use client";
 
 import { useSonner } from "sonner";
+import { dismissAllToasts } from "@/lib/toast";
 
 type PersistToastProps = {
   toastId: string | number;
@@ -65,6 +66,15 @@ export function PersistToast({
           <p className="mt-1 break-all text-xs leading-snug opacity-80">
             {description}
           </p>
+        ) : null}
+        {position === 1 && total > 1 ? (
+          <button
+            type="button"
+            onClick={() => dismissAllToasts()}
+            className={`mt-2 text-[11px] font-medium underline-offset-2 hover:underline ${styles.close} rounded px-0 py-0.5`}
+          >
+            Clear all
+          </button>
         ) : null}
       </div>
       <button
