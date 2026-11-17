@@ -1,16 +1,16 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{BOUNTY_SEED, VAULT_SEED};
+use crate::constants::{BOUNTY_SEED, SUBMISSION_SEED, VAULT_SEED};
 use crate::error::BountyError;
-use crate::state::{Bounty, BountyStatus, Vault};
+use crate::state::{Bounty, BountyStatus, Submission, Vault};
 
 #[derive(Accounts)]
 pub struct Accept<'info> {
     #[account(mut)]
     pub creator: Signer<'info>,
 
-    /// CHECK: hunter receives the escrowed SOL; must match bounty.hunter
-    #[account(mut, constraint = hunter.key() == bounty.hunter @ BountyError::NoSubmission)]
+    /// CHECK: hunter receives the escrowed SOL; must own the submission
+    #[account(mut)]
     pub hunter: SystemAccount<'info>,
 
     #[account(
@@ -18,10 +18,21 @@ pub struct Accept<'info> {
         seeds = [BOUNTY_SEED, creator.key().as_ref(), &bounty.bounty_id.to_le_bytes()],
         bump = bounty.bump,
         has_one = creator @ BountyError::UnauthorizedCreator,
-        constraint = bounty.status == BountyStatus::Submitted @ BountyError::NoSubmission,
+        constraint = bounty.status == BountyStatus::Open @ BountyError::NotOpen,
+        constraint = bounty.submission_count > 0 @ BountyError::NoSubmission,
         close = creator
     )]
     pub bounty: Account<'info, Bounty>,
+
+    #[account(
+        mut,
+        seeds = [SUBMISSION_SEED, bounty.key().as_ref(), hunter.key().as_ref()],
+        bump = submission.bump,
+        constraint = submission.bounty == bounty.key() @ BountyError::InvalidSubmission,
+        constraint = submission.hunter == hunter.key() @ BountyError::InvalidSubmission,
+        close = hunter
+    )]
+    pub submission: Account<'info, Submission>,
 
     #[account(
         mut,
@@ -36,8 +47,9 @@ pub fn handle_accept(ctx: Context<Accept>) -> Result<()> {
     let amount = ctx.accounts.bounty.amount;
     ctx.accounts.bounty.status = BountyStatus::Completed;
     msg!(
-        "Bounty accepted; vault (~{} lamports + rent) paid to hunter",
-        amount
+        "Bounty accepted; vault (~{} lamports + rent) paid to {}",
+        amount,
+        ctx.accounts.hunter.key()
     );
     Ok(())
 }
