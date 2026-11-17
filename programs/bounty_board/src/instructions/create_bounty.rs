@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-use crate::constants::{BOUNTY_SEED, VAULT_SEED};
+use crate::constants::{BOUNTY_SEED, MAX_DESCRIPTION_LEN, MAX_TITLE_LEN, VAULT_SEED};
 use crate::error::BountyError;
 use crate::state::{Bounty, BountyStatus, Vault};
 
@@ -37,8 +37,18 @@ pub fn handle_create_bounty(
     bounty_id: u64,
     amount: u64,
     deadline: i64,
+    title: String,
+    description: String,
 ) -> Result<()> {
     require!(amount > 0, BountyError::InvalidAmount);
+    require!(
+        !title.is_empty() && title.len() <= MAX_TITLE_LEN,
+        BountyError::InvalidTitle
+    );
+    require!(
+        !description.is_empty() && description.len() <= MAX_DESCRIPTION_LEN,
+        BountyError::InvalidDescription
+    );
 
     let clock = Clock::get()?;
     require!(deadline > clock.unix_timestamp, BountyError::InvalidDeadline);
@@ -49,8 +59,9 @@ pub fn handle_create_bounty(
     bounty.amount = amount;
     bounty.deadline = deadline;
     bounty.status = BountyStatus::Open;
-    bounty.hunter = Pubkey::default();
-    bounty.submission_uri = String::new();
+    bounty.submission_count = 0;
+    bounty.title = title;
+    bounty.description = description;
     bounty.bump = ctx.bumps.bounty;
     bounty.vault_bump = ctx.bumps.vault;
 
