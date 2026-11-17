@@ -17,8 +17,7 @@ pub struct ExpireRefund<'info> {
         mut,
         seeds = [BOUNTY_SEED, bounty.creator.as_ref(), &bounty.bounty_id.to_le_bytes()],
         bump = bounty.bump,
-        constraint = bounty.status == BountyStatus::Open || bounty.status == BountyStatus::Submitted
-            @ BountyError::CannotExpire,
+        constraint = bounty.status == BountyStatus::Open @ BountyError::CannotExpire,
         close = creator
     )]
     pub bounty: Account<'info, Bounty>,
