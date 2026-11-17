@@ -208,7 +208,7 @@ export const MAX_URI_LEN = 200;
 /** Rent headroom for Submission + UriClaim PDAs + fees */
 export const SUBMISSION_RENT_SOL = 0.005;
 
-/** Pull a readable message out of Anchor / wallet-adapter / Phantom errors. */
+/** Pull a readable message out of Anchor / wallet-adapter / wallet errors. */
 export function formatTxError(e: unknown): string {
   const err = e as {
     message?: string;
@@ -250,13 +250,13 @@ export function formatTxError(e: unknown): string {
 
   const text = [...new Set(chunks.filter(Boolean))].join(" — ") || "Transaction failed";
   if (/unexpected error/i.test(text)) {
-    return `${text}. Confirm Phantom is on Devnet, disconnect/reconnect the creator account, and approve the outbound SOL to the hunter when Phantom prompts.`;
+    return `${text}. Confirm the wallet is on Devnet, disconnect/reconnect the creator account, and approve the outbound SOL to the hunter when the wallet prompts.`;
   }
   if (/ConstraintSeeds|seeds constraint/i.test(text)) {
     return "This bounty was created before the latest program upgrade — create a new bounty and try again.";
   }
   if (/insufficient/i.test(text)) {
-    return `${text}. Fund this Phantom account on Devnet and retry.`;
+    return `${text}. Fund this wallet account on Devnet and retry.`;
   }
   return text;
 }
@@ -318,7 +318,7 @@ export type RpcOutcome =
 
 /**
  * Simulate, then send via wallet-adapter `sendTransaction` (more reliable with
- * Phantom than AnchorProvider's internal signTransaction path).
+ * browser wallets than AnchorProvider's internal signTransaction path).
  * Expected on-chain failures return `{ ok: false }` instead of throwing.
  */
 export async function rpcWithSim(
@@ -355,7 +355,7 @@ export async function rpcWithSim(
     if (e instanceof TxUserError) return { ok: false, message: e.userMessage };
     const msg = formatTxError(e);
     if (/user rejected|rejected the request/i.test(msg)) {
-      return { ok: false, message: "Request cancelled in Phantom." };
+      return { ok: false, message: "Request cancelled in wallet." };
     }
     throw e;
   }
