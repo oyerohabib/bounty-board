@@ -25,6 +25,7 @@ import {
   SUBMISSION_RENT_SOL,
   SystemProgram,
 } from "@/lib/program";
+import { notifySuccess, notifyError } from "@/lib/toast";
 
 function formatSubmittedAt(ts: BN | number): string {
   const n = typeof ts === "number" ? ts : ts.toNumber();
@@ -41,9 +42,6 @@ export default function BountyBoard() {
   const [submissions, setSubmissions] = useState<SubmissionAccount[]>([]);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [txMsg, setTxMsg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [staleNote, setStaleNote] = useState<string | null>(null);
   const [balanceSol, setBalanceSol] = useState<number | null>(null);
 
   const [title, setTitle] = useState("");
@@ -114,21 +112,16 @@ export default function BountyBoard() {
       const lamports = await connection.getBalance(publicKey);
       setBalanceSol(lamports / 1e9);
       const program = getProgram(getProvider(wallet));
-      const {
-        bounties: bountyRows,
-        submissions: submissionRows,
-        skippedStale,
-      } = await fetchBoardAccounts(program);
+      const { bounties: bountyRows, submissions: submissionRows } =
+        await fetchBoardAccounts(program);
       setBounties(bountyRows);
       setSubmissions(submissionRows);
-      setStaleNote(
-        skippedStale > 0
-          ? `${skippedStale} older on-chain account${skippedStale === 1 ? "" : "s"} hidden (pre-upgrade layout). Create a new bounty to use the board.`
-          : null
-      );
     } catch (e) {
       console.error(e);
-      setError(e instanceof Error ? e.message : "Failed to fetch bounties");
+      notifyError(
+        "Failed to fetch bounties",
+        e instanceof Error ? e.message : undefined
+      );
     } finally {
       setRefreshing(false);
     }
@@ -140,23 +133,21 @@ export default function BountyBoard() {
 
   async function withTx(label: string, fn: () => Promise<RpcOutcome>) {
     setBusy(true);
-    setError(null);
-    setTxMsg(null);
     try {
       const result = await fn();
       if (!result.ok) {
-        setError(result.message);
+        notifyError(result.message);
         return;
       }
-      setTxMsg(`${label}: ${result.signature}`);
+      notifySuccess(label, result.signature);
       await refresh();
     } catch (e) {
       const msg = formatTxError(e);
       if (/user rejected|rejected the request/i.test(msg)) {
-        setError("Request cancelled in Phantom.");
+        notifyError("Request cancelled in Phantom.");
       } else {
         console.error(e);
-        setError(msg);
+        notifyError(msg);
       }
     } finally {
       setBusy(false);
@@ -169,13 +160,14 @@ export default function BountyBoard() {
 
     const amountLamports = Math.round(parseFloat(amountSol) * 1e9);
     if (!Number.isFinite(amountLamports) || amountLamports <= 0) {
-      setError("Enter a valid SOL amount greater than 0.");
+      notifyError("Enter a valid SOL amount greater than 0.");
       return;
     }
     const rentBuffer = 0.01;
     if (balanceSol !== null && balanceSol < amountLamports / 1e9 + rentBuffer) {
-      setError(
-        `Not enough SOL. Need ~${(amountLamports / 1e9 + rentBuffer).toFixed(3)} SOL (escrow + rent); you have ${balanceSol.toFixed(4)} SOL.`
+      notifyError(
+        "Not enough SOL",
+        `Need ~${(amountLamports / 1e9 + rentBuffer).toFixed(3)} SOL (escrow + rent); you have ${balanceSol.toFixed(4)} SOL.`
       );
       return;
     }
@@ -216,16 +208,20 @@ export default function BountyBoard() {
     if (!wallet || !publicKey) return;
     const uri = submitUri.trim();
     if (!uri) {
-      setError("Paste a submission URI first.");
+      notifyError("Paste a submission URI first.");
       return;
     }
     if (uri.length > MAX_URI_LEN) {
-      setError(`Submission URI is too long (max ${MAX_URI_LEN} characters).`);
+      notifyError(
+        "Submission URI is too long",
+        `Max ${MAX_URI_LEN} characters.`
+      );
       return;
     }
     if (balanceSol !== null && balanceSol < SUBMISSION_RENT_SOL) {
-      setError(
-        `Hunter wallet needs ~${SUBMISSION_RENT_SOL} SOL free for submission + URI claim rent (you have ${balanceSol.toFixed(4)} SOL).`
+      notifyError(
+        "Not enough SOL for rent",
+        `Hunter wallet needs ~${SUBMISSION_RENT_SOL} SOL free (you have ${balanceSol.toFixed(4)} SOL).`
       );
       return;
     }
@@ -533,22 +529,6 @@ export default function BountyBoard() {
             faucet.solana.com
           </a>{" "}
           → reload and try again.
-        </p>
-      )}
-
-      {txMsg && (
-        <p className="mb-4 break-all rounded bg-teal-50 px-3 py-2 text-sm text-teal-900">
-          {txMsg}
-        </p>
-      )}
-      {error && (
-        <p className="mb-4 break-all rounded bg-red-50 px-3 py-2 text-sm text-red-800">
-          {error}
-        </p>
-      )}
-      {staleNote && (
-        <p className="mb-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-950">
-          {staleNote}
         </p>
       )}
 
