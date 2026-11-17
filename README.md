@@ -1,8 +1,6 @@
 # <img src="./logo.svg" alt="" width="32" height="32" /> Bounty Board
 
-Mid-level Solana + Anchor escrow app: creators post bounties and lock SOL; hunters submit proof; creators accept (pay) or cancel (refund); anyone can trigger an expiry refund after the deadline.
-
-Built as MLH Web3 / Solana practice: PDAs, program-owned vaults, Anchor instructions, wallet-adapter UI.
+Post bounties, lock SOL in escrow, and pay hunters when work lands — or cancel / expire-refund when it doesn’t. Built on Solana with Anchor PDAs, program-owned vaults, and a Phantom wallet UI.
 
 ## Stack
 
@@ -17,13 +15,12 @@ Built as MLH Web3 / Solana practice: PDAs, program-owned vaults, Anchor instruct
 
 ## Instructions
 
-1. `create_bounty(bounty_id, amount, deadline)` — init bounty + vault PDAs, escrow SOL  
-2. `submit_work(uri)` — hunter claims with a submission URL  
-3. `accept` — close vault to hunter, close bounty to creator  
-4. `cancel` — creator refund while Open/Submitted  
+1. `create_bounty(bounty_id, amount, deadline, title, description)` — init bounty + vault PDAs, escrow SOL (title/description on-chain)  
+2. `submit_work(uri)` — hunter opens/updates their own Submission PDA (many hunters per bounty)  
+3. `accept` — creator picks a submission; vault pays that hunter; winning submission closes  
+4. `cancel` — creator refund while Open  
 5. `expire_refund` — anyone after deadline; refunds creator  
-
-Off-chain title/description live in browser `localStorage` (v1).
+6. `reclaim_submission` — hunter closes a leftover Submission after the bounty is closed (recover rent)  
 
 ## Setup
 
@@ -86,9 +83,12 @@ anchor program deploy --provider.cluster devnet \
 ## Demo flow
 
 1. Connect Phantom on **Devnet** (or localnet with matching RPC).
-2. Post a bounty (title/description local; amount + deadline on-chain).
-3. From a second wallet, paste a submission URI → **Submit work**.
-4. Creator → **Accept & pay** (or **Cancel & refund** / **Expire refund** after deadline).
+2. Post a bounty (title, description, amount, and deadline are all on-chain).
+3. From other accounts, paste a submission URI → **Submit work** (each hunter keeps their own proof).
+4. Creator picks a submission → **Accept & pay** (or **Cancel & refund** / **Expire refund** after deadline).
+5. Losing hunters can **Reclaim rent** on leftover submission accounts after the bounty closes.
+
+**Note:** This schema change invalidates old on-chain bounties — redeploy after pulling (`anchor build` + `anchor program deploy`).
 
 ## Project layout
 
