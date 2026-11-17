@@ -68,7 +68,6 @@ export type BountyBoard = {
         },
         {
           "name": "submission",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -389,10 +388,31 @@ export type BountyBoard = {
         },
         {
           "name": "bounty",
-          "docs": [
-            "After accept/cancel/expire the bounty account is closed."
-          ],
-          "writable": true
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  117,
+                  110,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty.creator",
+                "account": "bounty"
+              },
+              {
+                "kind": "account",
+                "path": "bounty.bountyId",
+                "account": "bounty"
+              }
+            ]
+          }
         },
         {
           "name": "submission",
@@ -424,9 +444,43 @@ export type BountyBoard = {
               }
             ]
           }
+        },
+        {
+          "name": "uriClaim",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  114,
+                  105
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "arg",
+                "path": "uriHash"
+              }
+            ]
+          }
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "uriHash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "submitWork",
@@ -507,6 +561,41 @@ export type BountyBoard = {
           }
         },
         {
+          "name": "uriClaim",
+          "docs": [
+            "Claim PDA for the new/current URI (unique per bounty)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  114,
+                  105
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "bounty"
+              },
+              {
+                "kind": "arg",
+                "path": "uriHash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oldUriClaim",
+          "docs": [
+            "Previous URI claim when the hunter changes their link."
+          ],
+          "writable": true,
+          "optional": true
+        },
+        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
@@ -515,6 +604,15 @@ export type BountyBoard = {
         {
           "name": "submissionUri",
           "type": "string"
+        },
+        {
+          "name": "uriHash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
         }
       ]
     }
@@ -544,6 +642,19 @@ export type BountyBoard = {
         102,
         178,
         197
+      ]
+    },
+    {
+      "name": "uriClaim",
+      "discriminator": [
+        66,
+        105,
+        164,
+        239,
+        68,
+        15,
+        146,
+        26
       ]
     },
     {
@@ -625,6 +736,21 @@ export type BountyBoard = {
       "code": 6012,
       "name": "bountyStillOpen",
       "msg": "Cannot reclaim while the bounty is still open"
+    },
+    {
+      "code": 6013,
+      "name": "uriAlreadyClaimed",
+      "msg": "This submission URI is already claimed on this bounty"
+    },
+    {
+      "code": 6014,
+      "name": "invalidUriHash",
+      "msg": "URI hash does not match the submission URI"
+    },
+    {
+      "code": 6015,
+      "name": "cannotReclaimWinner",
+      "msg": "Winning submission cannot be reclaimed"
     }
   ],
   "types": [
@@ -668,6 +794,13 @@ export type BountyBoard = {
           {
             "name": "description",
             "type": "string"
+          },
+          {
+            "name": "winner",
+            "docs": [
+              "Set on accept; default pubkey until then."
+            ],
+            "type": "pubkey"
           },
           {
             "name": "bump",
@@ -721,6 +854,33 @@ export type BountyBoard = {
             "type": "string"
           },
           {
+            "name": "submittedAt",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "uriClaim",
+      "docs": [
+        "Enforces unique submission URIs per bounty."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "hunter",
+            "type": "pubkey"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -748,6 +908,11 @@ export type BountyBoard = {
       "name": "submissionSeed",
       "type": "bytes",
       "value": "[115, 117, 98, 109, 105, 115, 115, 105, 111, 110]"
+    },
+    {
+      "name": "uriSeed",
+      "type": "bytes",
+      "value": "[117, 114, 105]"
     },
     {
       "name": "vaultSeed",
