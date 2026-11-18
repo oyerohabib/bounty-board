@@ -1,7 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-use crate::constants::{BOUNTY_SEED, MAX_DESCRIPTION_LEN, MAX_TITLE_LEN, VAULT_SEED};
+use crate::constants::{
+    BOUNTY_SEED, MAX_DESCRIPTION_LEN, MAX_TITLE_LEN, NATIVE_SOL_DECIMALS, VAULT_SEED,
+};
 use crate::error::BountyError;
 use crate::state::{Bounty, BountyStatus, Vault};
 
@@ -51,7 +53,10 @@ pub fn handle_create_bounty(
     );
 
     let clock = Clock::get()?;
-    require!(deadline > clock.unix_timestamp, BountyError::InvalidDeadline);
+    require!(
+        deadline > clock.unix_timestamp,
+        BountyError::InvalidDeadline
+    );
 
     let bounty = &mut ctx.accounts.bounty;
     bounty.creator = ctx.accounts.creator.key();
@@ -65,6 +70,8 @@ pub fn handle_create_bounty(
     bounty.winner = Pubkey::default();
     bounty.bump = ctx.bumps.bounty;
     bounty.vault_bump = ctx.bumps.vault;
+    bounty.mint = Pubkey::default();
+    bounty.decimals = NATIVE_SOL_DECIMALS;
 
     system_program::transfer(
         CpiContext::new(
