@@ -15,3 +15,6 @@ pub const URI_SEED: &[u8] = b"uri";
 pub const MAX_URI_LEN: usize = 200;
 pub const MAX_TITLE_LEN: usize = 64;
 pub const MAX_DESCRIPTION_LEN: usize = 280;
+
+/// Native SOL amounts are lamports.
+pub const NATIVE_SOL_DECIMALS: u8 = 9;
