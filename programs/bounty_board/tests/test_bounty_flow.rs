@@ -202,6 +202,8 @@ fn test_multi_submit_accept_reclaim() {
         assert_eq!(state.title, "Fix login bug");
         assert_eq!(state.description, "PR that fixes auth redirect");
         assert_eq!(state.winner, Pubkey::default());
+        assert_eq!(state.mint, Pubkey::default());
+        assert_eq!(state.decimals, 9);
     }
 
     send_ix(
@@ -391,6 +393,12 @@ fn test_cancel_refunds_creator() {
 
     let after_create = svm.get_account(&creator.pubkey()).unwrap().lamports;
     assert!(after_create < creator_before);
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.mint, Pubkey::default());
+        assert_eq!(state.decimals, 9);
+    }
 
     send_ix(
         &mut svm,
@@ -448,6 +456,12 @@ fn test_expire_refund_after_deadline() {
             deadline,
         ),
     );
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.mint, Pubkey::default());
+        assert_eq!(state.decimals, 9);
+    }
 
     svm.warp_to_slot(10);
     {
