@@ -6,11 +6,21 @@ use {
     },
     bounty_board::state::{Bounty, BountyStatus, Submission},
     litesvm::LiteSVM,
+    solana_account::Account as SolAccount,
     solana_keypair::Keypair,
     solana_message::{Message, VersionedMessage},
+    solana_program_option::COption,
+    solana_program_pack::Pack,
     solana_sha256_hasher::hash,
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
+    spl_associated_token_account_interface::{
+        address::get_associated_token_address, program::ID as ASSOCIATED_TOKEN_PROGRAM_ID,
+    },
+    spl_token_interface::{
+        state::{Account as SplAccount, AccountState, Mint},
+        ID as TOKEN_PROGRAM_ID,
+    },
 };
 
 fn program_bytes() -> &'static [u8] {
@@ -24,7 +34,9 @@ fn send_ix(svm: &mut LiteSVM, payer: &Keypair, ix: Instruction) {
     let blockhash = svm.latest_blockhash();
     let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &blockhash);
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[payer]).unwrap();
-    svm.send_transaction(tx).expect("transaction failed");
+    if let Err(err) = svm.send_transaction(tx) {
+        panic!("transaction failed: {err:#?}");
+    }
 }
 
 fn send_ix_err(svm: &mut LiteSVM, payer: &Keypair, ix: Instruction) {
@@ -494,6 +506,339 @@ fn test_expire_refund_after_deadline() {
 
     assert!(svm.get_account(&bounty).is_some());
     assert!(svm.get_account(&vault).is_none());
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.status, BountyStatus::Expired);
+    }
+}
+
+const TOKEN_FUNDED: u64 = 5_000_000;
+const TOKEN_ESCROW: u64 = 1_500_000;
+
+fn pack_into<P: Pack>(value: P) -> Vec<u8> {
+    let mut data = vec![0u8; P::LEN];
+    P::pack(value, &mut data).unwrap();
+    data
+}
+
+fn set_token_account(svm: &mut LiteSVM, address: Pubkey, data: Vec<u8>) {
+    svm.set_account(
+        address,
+        SolAccount {
+            lamports: 1_000_000_000,
+            data,
+            owner: TOKEN_PROGRAM_ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+}
+
+fn fund_creator_ata(svm: &mut LiteSVM, mint: &Keypair, creator: &Pubkey) -> Pubkey {
+    let mint_data = pack_into(Mint {
+        mint_authority: COption::Some(*creator),
+        supply: TOKEN_FUNDED,
+        decimals: 6,
+        is_initialized: true,
+        freeze_authority: COption::None,
+    });
+    set_token_account(svm, mint.pubkey(), mint_data);
+
+    let ata = get_associated_token_address(creator, &mint.pubkey());
+    let ata_data = pack_into(SplAccount {
+        mint: mint.pubkey(),
+        owner: *creator,
+        amount: TOKEN_FUNDED,
+        delegate: COption::None,
+        state: AccountState::Initialized,
+        is_native: COption::None,
+        delegated_amount: 0,
+        close_authority: COption::None,
+    });
+    set_token_account(svm, ata, ata_data);
+    ata
+}
+
+fn token_amount(svm: &LiteSVM, address: &Pubkey) -> u64 {
+    let account = svm.get_account(address).expect("token account");
+    SplAccount::unpack(&account.data).unwrap().amount
+}
+
+fn create_token_bounty_ix(
+    program_id: Pubkey,
+    creator: Pubkey,
+    mint: Pubkey,
+    bounty: Pubkey,
+    vault: Pubkey,
+    creator_token_account: Pubkey,
+    bounty_id: u64,
+    amount: u64,
+    deadline: i64,
+) -> Instruction {
+    Instruction::new_with_bytes(
+        program_id,
+        &bounty_board::instruction::CreateTokenBounty {
+            bounty_id,
+            amount,
+            deadline,
+            title: "Fix login bug".to_string(),
+            description: "PR that fixes auth redirect".to_string(),
+        }
+        .data(),
+        bounty_board::accounts::CreateTokenBounty {
+            creator,
+            mint,
+            bounty,
+            vault,
+            creator_token_account,
+            token_program: TOKEN_PROGRAM_ID,
+            associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+    )
+}
+
+fn open_token_bounty(
+    svm: &mut LiteSVM,
+    creator: &Keypair,
+    program_id: Pubkey,
+    bounty_id: u64,
+    deadline: i64,
+) -> (Pubkey, Pubkey, Pubkey, Pubkey) {
+    let mint = Keypair::new();
+    let creator_ata = fund_creator_ata(svm, &mint, &creator.pubkey());
+    let (bounty, _) = bounty_pda(&program_id, &creator.pubkey(), bounty_id);
+    let (vault, _) = vault_pda(&program_id, &bounty);
+    send_ix(
+        svm,
+        creator,
+        create_token_bounty_ix(
+            program_id,
+            creator.pubkey(),
+            mint.pubkey(),
+            bounty,
+            vault,
+            creator_ata,
+            bounty_id,
+            TOKEN_ESCROW,
+            deadline,
+        ),
+    );
+    (mint.pubkey(), bounty, vault, creator_ata)
+}
+
+#[test]
+fn test_token_bounty_accept_pays_hunter() {
+    let (mut svm, creator, program_id) = setup();
+    let hunter = Keypair::new();
+    svm.airdrop(&hunter.pubkey(), 1_000_000_000).unwrap();
+
+    let bounty_id = 11u64;
+    let deadline = 2_000_000_000i64;
+    let (mint, bounty, vault, creator_ata) =
+        open_token_bounty(&mut svm, &creator, program_id, bounty_id, deadline);
+
+    assert_eq!(
+        token_amount(&svm, &creator_ata),
+        TOKEN_FUNDED - TOKEN_ESCROW
+    );
+    assert_eq!(token_amount(&svm, &vault), TOKEN_ESCROW);
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.mint, mint);
+        assert_eq!(state.decimals, 6);
+        assert_eq!(state.amount, TOKEN_ESCROW);
+    }
+
+    let uri = "https://github.com/example/pr/token";
+    let (submission, _) = submission_pda(&program_id, &bounty, &hunter.pubkey());
+    let (claim, _) = uri_claim_pda(&program_id, &bounty, uri);
+    send_ix(
+        &mut svm,
+        &hunter,
+        submit_work_ix(
+            program_id,
+            hunter.pubkey(),
+            bounty,
+            submission,
+            claim,
+            None,
+            uri.to_string(),
+        ),
+    );
+
+    // Native SOL settle cannot close a token vault.
+    send_ix_err(
+        &mut svm,
+        &creator,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::Accept {}.data(),
+            bounty_board::accounts::Accept {
+                creator: creator.pubkey(),
+                hunter: hunter.pubkey(),
+                bounty,
+                submission,
+                vault,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    let hunter_ata = get_associated_token_address(&hunter.pubkey(), &mint);
+    send_ix(
+        &mut svm,
+        &creator,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::AcceptToken {}.data(),
+            bounty_board::accounts::AcceptToken {
+                creator: creator.pubkey(),
+                hunter: hunter.pubkey(),
+                mint,
+                bounty,
+                submission,
+                vault,
+                hunter_token_account: hunter_ata,
+                token_program: TOKEN_PROGRAM_ID,
+                associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    assert!(svm.get_account(&vault).is_none());
+    assert_eq!(token_amount(&svm, &hunter_ata), TOKEN_ESCROW);
+    assert_eq!(
+        token_amount(&svm, &creator_ata),
+        TOKEN_FUNDED - TOKEN_ESCROW
+    );
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.status, BountyStatus::Completed);
+        assert_eq!(state.winner, hunter.pubkey());
+    }
+}
+
+#[test]
+fn test_token_bounty_cancel_refunds_creator() {
+    let (mut svm, creator, program_id) = setup();
+    let bounty_id = 12u64;
+    let deadline = 2_000_000_000i64;
+    let (mint, bounty, vault, creator_ata) =
+        open_token_bounty(&mut svm, &creator, program_id, bounty_id, deadline);
+
+    send_ix_err(
+        &mut svm,
+        &creator,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::Cancel {}.data(),
+            bounty_board::accounts::Cancel {
+                creator: creator.pubkey(),
+                bounty,
+                vault,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    send_ix(
+        &mut svm,
+        &creator,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::CancelToken {}.data(),
+            bounty_board::accounts::CancelToken {
+                creator: creator.pubkey(),
+                mint,
+                bounty,
+                vault,
+                creator_token_account: creator_ata,
+                token_program: TOKEN_PROGRAM_ID,
+                associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    assert!(svm.get_account(&vault).is_none());
+    assert_eq!(token_amount(&svm, &creator_ata), TOKEN_FUNDED);
+    {
+        let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
+        let state = Bounty::try_deserialize(&mut data).unwrap();
+        assert_eq!(state.status, BountyStatus::Cancelled);
+    }
+}
+
+#[test]
+fn test_token_bounty_expire_refunds_creator() {
+    let (mut svm, creator, program_id) = setup();
+    let caller = Keypair::new();
+    svm.airdrop(&caller.pubkey(), 1_000_000_000).unwrap();
+
+    let bounty_id = 13u64;
+    let deadline = 1_700_000_100i64;
+    let (mint, bounty, vault, creator_ata) =
+        open_token_bounty(&mut svm, &creator, program_id, bounty_id, deadline);
+
+    svm.warp_to_slot(10);
+    {
+        use anchor_lang::prelude::Clock;
+        let clock = Clock {
+            slot: 100,
+            epoch_start_timestamp: deadline + 100,
+            epoch: 1,
+            leader_schedule_epoch: 1,
+            unix_timestamp: deadline + 100,
+        };
+        let _ = svm.set_sysvar(&clock);
+    }
+
+    send_ix_err(
+        &mut svm,
+        &caller,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::ExpireRefund {}.data(),
+            bounty_board::accounts::ExpireRefund {
+                caller: caller.pubkey(),
+                creator: creator.pubkey(),
+                bounty,
+                vault,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    send_ix(
+        &mut svm,
+        &caller,
+        Instruction::new_with_bytes(
+            program_id,
+            &bounty_board::instruction::ExpireRefundToken {}.data(),
+            bounty_board::accounts::ExpireRefundToken {
+                caller: caller.pubkey(),
+                creator: creator.pubkey(),
+                mint,
+                bounty,
+                vault,
+                creator_token_account: creator_ata,
+                token_program: TOKEN_PROGRAM_ID,
+                associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+            }
+            .to_account_metas(None),
+        ),
+    );
+
+    assert!(svm.get_account(&vault).is_none());
+    assert_eq!(token_amount(&svm, &creator_ata), TOKEN_FUNDED);
     {
         let mut data: &[u8] = &svm.get_account(&bounty).unwrap().data;
         let state = Bounty::try_deserialize(&mut data).unwrap();
