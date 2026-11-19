@@ -36,7 +36,10 @@ export function assetLabel(mint: PublicKey): string {
 }
 
 export function formatAssetAmount(amount: BN, decimals: number, mint: PublicKey) {
-  return `${formatBaseUnits(amount, decimals)} ${assetLabel(mint)}`;
+  // Legacy SOL bounties have no decimals field. Their spare account
+  // padding decodes as 0, which would print lamports as whole SOL.
+  const scale = isSolMint(mint) ? 9 : decimals;
+  return `${formatBaseUnits(amount, scale)} ${assetLabel(mint)}`;
 }
 
 export async function fetchMintDecimals(
