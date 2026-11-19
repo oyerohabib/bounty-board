@@ -43,8 +43,41 @@ export type BountyAccount = {
     winner: PublicKey;
     bump: number;
     vaultBump: number;
+    /** Default pubkey means native SOL. */
+    mint: PublicKey;
+    /** 9 for SOL; mint decimals for SPL. */
+    decimals: number;
   };
 };
+
+export function isSolMint(mint: PublicKey): boolean {
+  return mint.equals(PublicKey.default);
+}
+
+export function isSolBounty(account: BountyAccount["account"]): boolean {
+  return isSolMint(account.mint);
+}
+
+/** Parse a decimal string into base units. Rejects more fractional digits than `decimals`. */
+export function parseBaseUnits(input: string, decimals: number): BN | null {
+  const trimmed = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+  const [whole, frac = ""] = trimmed.split(".");
+  if (frac.length > decimals) return null;
+  const base = `${whole}${frac.padEnd(decimals, "0")}`.replace(/^0+(?=\d)/, "");
+  if (base === "0") return null;
+  return new BN(base);
+}
+
+/** Format base units without float rounding. Trailing zeros are trimmed. */
+export function formatBaseUnits(amount: BN, decimals: number): string {
+  const negative = amount.isNeg();
+  const raw = amount.abs().toString(10).padStart(decimals + 1, "0");
+  const whole = raw.slice(0, raw.length - decimals);
+  const frac = raw.slice(raw.length - decimals).replace(/0+$/, "");
+  const text = frac.length > 0 ? `${whole}.${frac}` : whole;
+  return negative ? `-${text}` : text;
+}
 
 export type SubmissionAccount = {
   publicKey: PublicKey;
