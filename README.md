@@ -2,6 +2,12 @@
 
 Post bounties, lock SOL in escrow, and pay hunters when work lands — or cancel / expire-refund when it doesn’t. Built on Solana with Anchor PDAs, program-owned vaults, and a Phantom wallet UI.
 
+## Walkthrough
+
+| Part 1 | Part 2 |
+|:---:|:---:|
+| <a href="https://www.loom.com/share/604d778b5a3a401cacbc0da07a44f020"><img src="https://cdn.loom.com/sessions/thumbnails/604d778b5a3a401cacbc0da07a44f020-84f273ac9b176e3b-full-play.gif" alt="Bounty Board walkthrough, part 1" width="420" /></a><br>[Watch part 1](https://www.loom.com/share/604d778b5a3a401cacbc0da07a44f020) | <a href="https://www.loom.com/share/f0df0406c8004ed48fa851495ad74504"><img src="https://cdn.loom.com/sessions/thumbnails/f0df0406c8004ed48fa851495ad74504-4637cc153df9538b-full-play.gif" alt="Bounty Board walkthrough, part 2" width="420" /></a><br>[Watch part 2](https://www.loom.com/share/f0df0406c8004ed48fa851495ad74504) |
+
 ## Stack
 
 | Layer | Tech |
