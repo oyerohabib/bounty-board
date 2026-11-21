@@ -1,6 +1,6 @@
 # Bounty Board UI
 
-Next.js 15 frontend for the Solana Bounty Board program — wallet connect (Phantom), post bounties, submit work, accept/cancel/expire.
+Next.js 15 frontend for the Solana Bounty Board program — wallet connect (Phantom, Solflare, or Backpack), post bounties in SOL, Devnet USDC, or a custom SPL mint, submit work, accept/cancel/expire.
 
 ## Getting Started
 
