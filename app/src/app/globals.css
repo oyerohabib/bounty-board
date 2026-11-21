@@ -135,6 +135,10 @@ button:not(:disabled):active {
     border-color var(--dur) var(--ease-out);
 }
 
+.nav-indicator {
+  transition: transform var(--dur) var(--ease-out);
+}
+
 /* Affordance: connected wallet opens a dropdown (change / disconnect). */
 .wallet-btn-wrap.is-connected .wallet-adapter-button-trigger::after {
   content: "";
