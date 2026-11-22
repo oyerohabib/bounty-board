@@ -1,6 +1,6 @@
 # <img src="./logo.svg" alt="" width="32" height="32" /> Bounty Board
 
-Post bounties, lock SOL in escrow, and pay hunters when work lands — or cancel / expire-refund when it doesn’t. Built on Solana with Anchor PDAs, program-owned vaults, and a Phantom wallet UI.
+Post bounties, lock SOL, Devnet USDC, or a custom classic SPL token in escrow, and pay hunters when work lands — or cancel / expire-refund when it doesn’t. Settled bounties stay on the History page. Built on Solana with Anchor PDAs, program-owned vaults, and a wallet UI (Phantom, Solflare, or Backpack).
 
 ## Walkthrough
 
@@ -86,13 +86,32 @@ anchor program deploy --provider.cluster devnet \
   --buffer target/deploy/bounty_board-upgrade-buffer.json
 ```
 
+## Devnet wallet funds
+
+The wallet you connect in the UI is not the CLI deploy wallet. It needs a little SOL for rent on every bounty, including token bounties.
+
+- **SOL:** https://faucet.solana.com/
+- **USDC:** [Circle's faucet](https://faucet.circle.com/?chain=SOL). Choose Solana Devnet. It sends 20 USDC about every 2 hours. In the form, choose USDC.
+- **Custom SPL mint** (classic Token program, not Token-2022). From the CLI wallet:
+
+```bash
+spl-token create-token --decimals 6 --url devnet
+spl-token create-account <MINT> --owner <PHANTOM_ADDRESS> \
+  --fee-payer ~/.config/solana/id.json --url devnet
+spl-token mint <MINT> 1000 --recipient-owner <PHANTOM_ADDRESS> \
+  --fee-payer ~/.config/solana/id.json \
+  --mint-authority ~/.config/solana/id.json --url devnet
+```
+
+In the form, choose Custom and paste that mint address.
+
 ## Demo flow
 
-1. Connect Phantom on **Devnet** (or localnet with matching RPC).
-2. Post a bounty (title, description, amount, and deadline are all on-chain).
+1. Connect a wallet on **Devnet** (or localnet with matching RPC).
+2. Post a bounty in SOL, Devnet USDC, or a custom mint. Title, description, amount, and deadline are all on-chain.
 3. From other accounts, paste a **unique** submission URI → **Submit work** (duplicate links on the same bounty are rejected).
-4. Creator picks a submission → **Accept & pay** (or **Cancel & refund** / **Expire refund** after deadline).
-5. Settled bounties move to **History** (kept on-chain with timestamps and winner).
+4. Creator picks a submission → **Accept & pay** (or **Cancel & refund** / **Expire refund** after deadline). The bounty moves to History.
+5. Open **History** for completed, cancelled, and expired bounties (kept on-chain with timestamps and winner).
 6. Losing hunters can **Reclaim rent** on leftover submission + URI-claim accounts.
 
 **Note:** This schema change invalidates old on-chain bounties — redeploy after pulling (`anchor build` + `anchor program deploy`).

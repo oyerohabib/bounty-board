@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Fraunces, Source_Sans_3 } from "next/font/google";
 import AppToaster from "@/components/AppToaster";
+import BoardChrome from "@/components/BoardChrome";
 import AppWalletProvider from "@/components/WalletProvider";
 import "./globals.css";
 
@@ -32,7 +33,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${display.variable} ${body.variable} font-[family-name:var(--font-body)] antialiased`}>
         <AppWalletProvider>
-          {children}
+          <BoardChrome>{children}</BoardChrome>
           <AppToaster />
         </AppWalletProvider>
       </body>

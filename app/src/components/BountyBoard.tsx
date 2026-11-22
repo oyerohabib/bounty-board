@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Image from "next/image";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useAnchorWallet, useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
-import WalletButton from "@/components/WalletButton";
+import AssetPicker, { type AssetChoice } from "@/components/AssetPicker";
+import BountyFilters from "@/components/BountyFilters";
+import BountyListSkeleton from "@/components/BountyListSkeleton";
 import {
   BN,
   BountyAccount,
@@ -45,6 +48,40 @@ import {
   accountSwitchFrom,
   isAccountSwitching,
 } from "@/lib/accountSwitch";
+import {
+  byNewest,
+  matchesBounty,
+  type AssetFilter,
+  type StatusFilter,
+} from "@/lib/boardQuery";
+import { setBoardChromeState } from "@/lib/boardChromeState";
+
+const HOME_PREVIEW = 5;
+const DEADLINE_PRESETS = [1, 3, 7, 14] as const;
+
+function padTime(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/** `datetime-local` value in the viewer's local time. */
+function toDatetimeLocal(date: Date): string {
+  return `${date.getFullYear()}-${padTime(date.getMonth() + 1)}-${padTime(date.getDate())}T${padTime(date.getHours())}:${padTime(date.getMinutes())}`;
+}
+
+function deadlineFromDays(days: number): string {
+  return toDatetimeLocal(new Date(Date.now() + days * 86400 * 1000));
+}
+
+function deadlineAtLabel(value: string): string {
+  const parsed = new Date(value);
+  if (!value || Number.isNaN(parsed.getTime())) {
+    return "Choose the exact date and time work must be in by.";
+  }
+  if (parsed.getTime() <= Date.now()) {
+    return "That time has already passed.";
+  }
+  return `Closes ${parsed.toLocaleString()}.`;
+}
 
 function formatSubmittedAt(ts: BN | number): string {
   const n = typeof ts === "number" ? ts : ts.toNumber();
@@ -60,6 +97,13 @@ function shortAddress(base58: string): string {
 let lastAccountKeyForToast: string | null = null;
 
 export default function BountyBoard() {
+  const pathname = usePathname();
+  const view =
+    pathname === "/history"
+      ? "history"
+      : pathname === "/open"
+        ? "open"
+        : "home";
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
   const { publicKey, connected, sendTransaction } = useWallet();
@@ -70,14 +114,27 @@ export default function BountyBoard() {
   const [submissions, setSubmissions] = useState<SubmissionAccount[]>([]);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [boardReady, setBoardReady] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState(0);
+  /** Open bounty keys after the last successful fetch. Null until that baseline exists. */
+  const openKeysRef = useRef<Set<string> | null>(null);
+  const loadedAccountRef = useRef<string | null>(null);
+  /** Settled by this wallet, so the success toast already said they are in History. */
+  const ownSettledRef = useRef<Set<string>>(new Set());
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
   const [balanceSol, setBalanceSol] = useState<number | null>(null);
   const [tokenBalance, setTokenBalance] = useState<BN | null>(null);
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [amountInput, setAmountInput] = useState("0.1");
-  const [days, setDays] = useState("7");
-  const [assetChoice, setAssetChoice] = useState<"sol" | "usdc" | "custom">("sol");
+  const [deadlineInput, setDeadlineInput] = useState("");
+  const [deadlineMin, setDeadlineMin] = useState("");
+  const [assetChoice, setAssetChoice] = useState<AssetChoice>("sol");
+  const [query, setQuery] = useState("");
+  const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [customMint, setCustomMint] = useState("");
   const [customDecimals, setCustomDecimals] = useState<number | null>(null);
   const [customMintState, setCustomMintState] = useState<
@@ -110,13 +167,26 @@ export default function BountyBoard() {
   }, [bounties]);
 
   const openBounties = useMemo(
-    () => bounties.filter((b) => isOpenStatus(b.account.status)),
+    () => bounties.filter((b) => isOpenStatus(b.account.status)).sort(byNewest),
     [bounties]
   );
 
   const historyBounties = useMemo(
-    () => bounties.filter((b) => !isOpenStatus(b.account.status)),
+    () => bounties.filter((b) => !isOpenStatus(b.account.status)).sort(byNewest),
     [bounties]
+  );
+
+  const filteredOpen = useMemo(
+    () => openBounties.filter((b) => matchesBounty(b, query, assetFilter)),
+    [openBounties, query, assetFilter]
+  );
+
+  const filteredHistory = useMemo(
+    () =>
+      historyBounties.filter((b) =>
+        matchesBounty(b, query, assetFilter, statusFilter)
+      ),
+    [historyBounties, query, assetFilter, statusFilter]
   );
 
   const splMint = useMemo(() => {
@@ -157,6 +227,11 @@ export default function BountyBoard() {
       setSubmissions([]);
       setBalanceSol(null);
       setTokenBalance(null);
+      setBoardReady(false);
+      setHistoryNotice(0);
+      openKeysRef.current = null;
+      loadedAccountRef.current = null;
+      ownSettledRef.current.clear();
       return;
     }
     setRefreshing(true);
@@ -168,9 +243,16 @@ export default function BountyBoard() {
       } else {
         setTokenBalance(null);
       }
+      const account = publicKey.toBase58();
+      if (loadedAccountRef.current !== account) {
+        openKeysRef.current = null;
+        setBoardReady(false);
+      }
       const program = getProgram(getProvider(wallet));
       const { bounties: bountyRows, submissions: submissionRows } =
         await fetchBoardAccounts(program);
+      noteHistoryMoves(bountyRows);
+      loadedAccountRef.current = account;
       setBounties(bountyRows);
       setSubmissions(submissionRows);
     } catch (e) {
@@ -181,8 +263,57 @@ export default function BountyBoard() {
       );
     } finally {
       setRefreshing(false);
+      if (wallet && publicKey) setBoardReady(true);
     }
   }, [wallet, publicKey, connection, splMint]);
+
+  function noteHistoryMoves(rows: BountyAccount[]) {
+    const openNow = new Set(
+      rows
+        .filter((bounty) => isOpenStatus(bounty.account.status))
+        .map((bounty) => bounty.publicKey.toBase58())
+    );
+    const previous = openKeysRef.current;
+    openKeysRef.current = openNow;
+    if (!previous) return;
+
+    const settled = new Map(
+      rows
+        .filter((bounty) => !isOpenStatus(bounty.account.status))
+        .map((bounty) => [bounty.publicKey.toBase58(), bounty] as const)
+    );
+    const announced: BountyAccount[] = [];
+    let noticed = 0;
+    for (const key of previous) {
+      if (openNow.has(key)) {
+        ownSettledRef.current.delete(key);
+        continue;
+      }
+      const row = settled.get(key);
+      if (!row) continue;
+      noticed += 1;
+      if (ownSettledRef.current.has(key)) {
+        ownSettledRef.current.delete(key);
+        continue;
+      }
+      announced.push(row);
+    }
+    if (announced.length === 1) {
+      const title = announced[0].account.title.trim();
+      notifySuccess(
+        "Moved to History",
+        title || "A bounty is now completed, cancelled, or expired."
+      );
+    } else if (announced.length > 1) {
+      notifySuccess(
+        "Moved to History",
+        `${announced.length} bounties are now in History.`
+      );
+    }
+    if (noticed > 0 && pathnameRef.current !== "/history") {
+      setHistoryNotice((count) => count + noticed);
+    }
+  }
 
   useEffect(() => {
     if (assetChoice !== "custom" || !splMint) {
@@ -222,6 +353,27 @@ export default function BountyBoard() {
   }, [refresh, connected, accountKey]);
 
   useEffect(() => {
+    if (view === "history") setHistoryNotice(0);
+  }, [view]);
+
+  useEffect(() => {
+    setBoardChromeState({ historyNotice });
+  }, [historyNotice]);
+
+  useEffect(() => {
+    if (!connected) {
+      setBoardChromeState({ balanceSol: null });
+      return;
+    }
+    if (balanceSol !== null) setBoardChromeState({ balanceSol });
+  }, [balanceSol, connected]);
+
+  useEffect(() => {
+    setDeadlineInput((current) => current || deadlineFromDays(7));
+    setDeadlineMin(toDatetimeLocal(new Date()));
+  }, []);
+
+  useEffect(() => {
     if (!accountKey) {
       if (isAccountSwitching()) return;
       setSubmitUris({});
@@ -241,7 +393,11 @@ export default function BountyBoard() {
     lastAccountKeyForToast = accountKey;
   }, [accountKey]);
 
-  async function withTx(label: string, fn: () => Promise<RpcOutcome>) {
+  async function withTx(
+    label: string,
+    fn: () => Promise<RpcOutcome>,
+    historyKey?: string
+  ) {
     setBusy(true);
     try {
       const result = await fn();
@@ -249,7 +405,11 @@ export default function BountyBoard() {
         notifyError(result.message);
         return;
       }
-      notifySuccess(label, result.signature);
+      if (historyKey) ownSettledRef.current.add(historyKey);
+      notifySuccess(
+        label,
+        historyKey ? `Now in History. ${result.signature}` : result.signature
+      );
       await refresh();
     } catch (e) {
       const msg = formatTxError(e);
@@ -316,10 +476,18 @@ export default function BountyBoard() {
       }
     }
 
+    const deadlineAt = new Date(deadlineInput);
+    if (!deadlineInput || Number.isNaN(deadlineAt.getTime())) {
+      notifyError("Pick a deadline.");
+      return;
+    }
+    if (deadlineAt.getTime() <= Date.now()) {
+      notifyError("Deadline has to be in the future.");
+      return;
+    }
+
     const bountyId = new BN(Date.now());
-    const deadline = new BN(
-      Math.floor(Date.now() / 1000) + parseInt(days, 10) * 86400
-    );
+    const deadline = new BN(Math.floor(deadlineAt.getTime() / 1000));
     const [bounty] = bountyPda(publicKey, bountyId);
     const [vault] = vaultPda(bounty);
 
@@ -478,7 +646,7 @@ export default function BountyBoard() {
             vault,
           });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
-    });
+    }, row.publicKey.toBase58());
   }
 
   async function onCancel(row: BountyAccount) {
@@ -506,7 +674,7 @@ export default function BountyBoard() {
             vault,
           });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
-    });
+    }, row.publicKey.toBase58());
   }
 
   async function onExpire(row: BountyAccount) {
@@ -536,7 +704,7 @@ export default function BountyBoard() {
             vault,
           });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
-    });
+    }, row.publicKey.toBase58());
   }
 
   async function onReclaim(sub: SubmissionAccount) {
@@ -739,52 +907,7 @@ export default function BountyBoard() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-10">
-      <header className="mb-10 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p className="text-sm uppercase tracking-[0.2em] text-teal-700">
-            Solana · Devnet
-          </p>
-          <div className="mt-1 flex items-center gap-2.5">
-            <Image
-              src="/logo-mark.svg"
-              alt=""
-              width={36}
-              height={36}
-              className="h-9 w-9 shrink-0"
-              priority
-            />
-            <h1 className="font-display text-4xl leading-none text-stone-900">
-              Bounty Board
-            </h1>
-          </div>
-          <p className="mt-2 max-w-lg text-stone-600">
-            Post a bounty, lock SOL or an SPL token in escrow, and pay hunters when work lands.
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <WalletButton />
-          {connected && balanceSol !== null && (
-            <p className="animate-fade-in text-sm text-stone-600">
-              Devnet: <strong>{balanceSol.toFixed(4)} SOL</strong>
-              {balanceSol < 0.05 && (
-                <>
-                  {" · "}
-                  <a
-                    className="text-teal-800 underline"
-                    href="https://faucet.solana.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Get Devnet SOL
-                  </a>
-                </>
-              )}
-            </p>
-          )}
-        </div>
-      </header>
-
+    <>
       {connected && balanceSol !== null && balanceSol < 0.05 && (
         <p className="board-banner mb-4 rounded bg-amber-50 px-3 py-2 text-sm text-amber-950">
           Your connected wallet needs Devnet SOL (this is separate from the CLI
@@ -822,6 +945,8 @@ export default function BountyBoard() {
         </div>
       ) : (
         <div className="animate-fade-up">
+          {view === "home" && (
+          <>
           <section className="board-section mb-12 border-t border-stone-200 pt-8">
             <h2 className="font-display text-2xl text-stone-900">Post a bounty</h2>
             <form onSubmit={onCreate} className="mt-4 grid gap-3">
@@ -842,23 +967,7 @@ export default function BountyBoard() {
                 rows={3}
                 required
               />
-              <label className="text-sm text-stone-600">
-                Asset
-                <select
-                  className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
-                  value={assetChoice}
-                  onChange={(e) =>
-                    setAssetChoice(e.target.value as "sol" | "usdc" | "custom")
-                  }
-                >
-                  <option value="sol">SOL</option>
-                  <option value="usdc">USDC (Devnet)</option>
-                  <option value="custom">Custom SPL mint</option>
-                </select>
-                <span className="mt-1 block text-xs text-stone-500">
-                  USDC is Circle&apos;s Devnet mint. Custom mints must use the classic SPL Token program.
-                </span>
-              </label>
+              <AssetPicker value={assetChoice} onChange={setAssetChoice} />
               {assetChoice === "custom" && (
                 <label className="text-sm text-stone-600">
                   Mint address
@@ -885,29 +994,54 @@ export default function BountyBoard() {
                     : ""}
                 </p>
               )}
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-sm text-stone-600">
+              <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1 sm:grid-cols-4">
+                <label
+                  htmlFor="bounty-amount"
+                  className="text-sm text-stone-600 sm:col-start-1 sm:row-start-1"
+                >
                   Amount ({assetChoice === "sol" ? "SOL" : assetChoice === "usdc" ? "USDC" : "tokens"})
-                  <input
-                    className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
-                    type="text"
-                    inputMode="decimal"
-                    value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
-                    required
-                  />
                 </label>
-                <label className="text-sm text-stone-600">
-                  Deadline (days)
-                  <input
-                    className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
-                    type="number"
-                    min="1"
-                    value={days}
-                    onChange={(e) => setDays(e.target.value)}
-                    required
-                  />
+                <input
+                  id="bounty-amount"
+                  className="box-border h-10 max-h-10 w-full min-w-0 self-start rounded border border-stone-300 bg-white px-3 sm:col-start-1 sm:row-start-2"
+                  type="text"
+                  inputMode="decimal"
+                  value={amountInput}
+                  onChange={(e) => setAmountInput(e.target.value)}
+                  required
+                />
+                <label
+                  htmlFor="bounty-deadline"
+                  className="mt-2 text-sm text-stone-600 sm:col-span-3 sm:col-start-2 sm:row-start-1 sm:mt-0"
+                >
+                  Deadline
                 </label>
+                <input
+                  id="bounty-deadline"
+                  className="box-border h-10 max-h-10 w-full min-w-0 self-start rounded border border-stone-300 bg-white px-3 sm:col-span-3 sm:col-start-2 sm:row-start-2"
+                  type="datetime-local"
+                  value={deadlineInput}
+                  min={deadlineMin || undefined}
+                  onChange={(e) => setDeadlineInput(e.target.value)}
+                  required
+                />
+                <div className="sm:col-span-3 sm:col-start-2 sm:row-start-3">
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                  {DEADLINE_PRESETS.map((days) => (
+                    <button
+                      key={days}
+                      type="button"
+                      onClick={() => setDeadlineInput(deadlineFromDays(days))}
+                      className="text-xs text-teal-800 underline"
+                    >
+                      In {days} day{days === 1 ? "" : "s"}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-stone-500">
+                  {deadlineAtLabel(deadlineInput)}
+                </p>
+                </div>
               </div>
               <button
                 type="submit"
@@ -923,8 +1057,55 @@ export default function BountyBoard() {
             className="board-section border-t border-stone-200 pt-8"
             style={{ animationDelay: "60ms" }}
           >
-            <div className="mb-4 flex items-center justify-between">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-display text-2xl text-stone-900">Open board</h2>
+              <div className="flex flex-wrap items-center gap-3">
+                <Link
+                  href="/open"
+                  className="rounded border border-teal-800 px-3 py-1.5 text-sm text-teal-900 hover:bg-teal-50"
+                >
+                  View all open bounties
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => void refresh()}
+                  disabled={refreshing}
+                  className="text-sm text-teal-800 underline disabled:opacity-50"
+                >
+                  {refreshing ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+            </div>
+
+            {!boardReady ? (
+              <BountyListSkeleton count={2} />
+            ) : openBounties.length === 0 ? (
+              <p className="animate-fade-in text-stone-500">No open bounties on-chain.</p>
+            ) : (
+              <>
+                <ul className="stagger-children space-y-6">
+                  {openBounties.slice(0, HOME_PREVIEW).map((b) => renderBountyCard(b, {}))}
+                </ul>
+                {openBounties.length > HOME_PREVIEW && (
+                  <p className="mt-4 text-sm text-stone-500">
+                    Showing the {HOME_PREVIEW} newest.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+          </>
+          )}
+
+        {view === "open" && (
+          <section className="board-section border-t border-stone-200 pt-8">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-display text-2xl text-stone-900">Open board</h2>
+                <p className="mt-1 text-sm text-stone-600">
+                  Newest bounties first. Still accepting work.
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => void refresh()}
@@ -934,37 +1115,72 @@ export default function BountyBoard() {
                 {refreshing ? "Refreshing…" : "Refresh"}
               </button>
             </div>
-
-            {openBounties.length === 0 ? (
-              <p className="animate-fade-in text-stone-500">No open bounties on-chain.</p>
+            <BountyFilters
+              query={query}
+              onQuery={setQuery}
+              asset={assetFilter}
+              onAsset={setAssetFilter}
+            />
+            {!boardReady ? (
+              <div className="mt-6">
+                <BountyListSkeleton count={3} />
+              </div>
+            ) : openBounties.length === 0 ? (
+              <p className="animate-fade-in mt-4 text-stone-500">No open bounties on-chain.</p>
+            ) : filteredOpen.length === 0 ? (
+              <p className="animate-fade-in mt-4 text-stone-500">No bounties match that search.</p>
             ) : (
-              <ul className="stagger-children space-y-6">
-                {openBounties.map((b) => renderBountyCard(b, {}))}
+              <ul className="stagger-children mt-6 space-y-6">
+                {filteredOpen.map((b) => renderBountyCard(b, {}))}
               </ul>
             )}
           </section>
+        )}
 
-          <section
-            className="board-section mt-10 border-t border-stone-200 pt-8"
-            style={{ animationDelay: "120ms" }}
-          >
-            <h2 className="font-display text-2xl text-stone-900">History</h2>
-            <p className="mt-1 text-sm text-stone-600">
-              Completed, cancelled, and expired bounties stay on-chain with their
-              submissions.
-            </p>
-            {historyBounties.length === 0 ? (
+        {view === "history" && (
+          <section className="board-section border-t border-stone-200 pt-8">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-display text-2xl text-stone-900">History</h2>
+                <p className="mt-1 text-sm text-stone-600">
+                  Completed, cancelled, and expired bounties stay on-chain with their
+                  submissions. Newest first.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                disabled={refreshing}
+                className="text-sm text-teal-800 underline disabled:opacity-50"
+              >
+                {refreshing ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+            <BountyFilters
+              query={query}
+              onQuery={setQuery}
+              asset={assetFilter}
+              onAsset={setAssetFilter}
+              status={statusFilter}
+              onStatus={setStatusFilter}
+            />
+            {!boardReady ? (
+              <div className="mt-6">
+                <BountyListSkeleton count={3} />
+              </div>
+            ) : historyBounties.length === 0 ? (
               <p className="animate-fade-in mt-4 text-stone-500">No settled bounties yet.</p>
+            ) : filteredHistory.length === 0 ? (
+              <p className="animate-fade-in mt-4 text-stone-500">No bounties match that search.</p>
             ) : (
-              <ul className="stagger-children mt-4 space-y-6">
-                {historyBounties.map((b) =>
-                  renderBountyCard(b, { history: true })
-                )}
+              <ul className="stagger-children mt-6 space-y-6">
+                {filteredHistory.map((b) => renderBountyCard(b, { history: true }))}
               </ul>
             )}
           </section>
+        )}
 
-          {reclaimable.length > 0 && (
+        {view === "history" && reclaimable.length > 0 && (
             <section
               className="board-section mt-10 border-t border-stone-200 pt-8"
               style={{ animationDelay: "180ms" }}
@@ -1004,6 +1220,6 @@ export default function BountyBoard() {
           )}
         </div>
       )}
-    </div>
+    </>
   );
 }
