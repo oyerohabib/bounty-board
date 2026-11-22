@@ -12,6 +12,7 @@ import {
   BN,
   BountyAccount,
   SubmissionAccount,
+  PROGRAM_ID,
   getProgram,
   getProvider,
   fetchBoardAccounts,
@@ -57,6 +58,8 @@ import {
 import { setBoardChromeState } from "@/lib/boardChromeState";
 
 const HOME_PREVIEW = 5;
+const LIVE_DEBOUNCE_MS = 500;
+const LIVE_POLL_MS = 60_000;
 const DEADLINE_PRESETS = [1, 3, 7, 14] as const;
 
 function padTime(value: number): string {
@@ -219,52 +222,64 @@ export default function BountyBoard() {
     });
   }, [submissions, publicKey, bountyByKey]);
 
-  const refresh = useCallback(async () => {
-    if (!wallet || !publicKey) {
-      // Keep board visible during Switch account reconnect (same or new key).
-      if (isAccountSwitching()) return;
-      setBounties([]);
-      setSubmissions([]);
-      setBalanceSol(null);
-      setTokenBalance(null);
-      setBoardReady(false);
-      setHistoryNotice(0);
-      openKeysRef.current = null;
-      loadedAccountRef.current = null;
-      ownSettledRef.current.clear();
-      return;
-    }
-    setRefreshing(true);
-    try {
-      const lamports = await connection.getBalance(publicKey);
-      setBalanceSol(lamports / 1e9);
-      if (splMint) {
-        setTokenBalance(await fetchTokenBalance(connection, splMint, publicKey));
-      } else {
+  const refreshTail = useRef<Promise<void>>(Promise.resolve());
+  const refresh = useCallback(async (opts?: { quiet?: boolean }) => {
+    const quiet = opts?.quiet === true;
+    const run = async () => {
+      if (!wallet || !publicKey) {
+        // Keep board visible during Switch account reconnect (same or new key).
+        if (isAccountSwitching()) return;
+        setBounties([]);
+        setSubmissions([]);
+        setBalanceSol(null);
         setTokenBalance(null);
-      }
-      const account = publicKey.toBase58();
-      if (loadedAccountRef.current !== account) {
-        openKeysRef.current = null;
         setBoardReady(false);
+        setHistoryNotice(0);
+        openKeysRef.current = null;
+        loadedAccountRef.current = null;
+        ownSettledRef.current.clear();
+        return;
       }
-      const program = getProgram(getProvider(wallet));
-      const { bounties: bountyRows, submissions: submissionRows } =
-        await fetchBoardAccounts(program);
-      noteHistoryMoves(bountyRows);
-      loadedAccountRef.current = account;
-      setBounties(bountyRows);
-      setSubmissions(submissionRows);
-    } catch (e) {
-      console.error(e);
-      notifyError(
-        "Failed to fetch bounties",
-        e instanceof Error ? e.message : undefined
-      );
-    } finally {
-      setRefreshing(false);
-      if (wallet && publicKey) setBoardReady(true);
-    }
+      if (!quiet) setRefreshing(true);
+      try {
+        const lamports = await connection.getBalance(publicKey);
+        setBalanceSol(lamports / 1e9);
+        if (splMint) {
+          setTokenBalance(await fetchTokenBalance(connection, splMint, publicKey));
+        } else {
+          setTokenBalance(null);
+        }
+        const account = publicKey.toBase58();
+        if (loadedAccountRef.current !== account) {
+          openKeysRef.current = null;
+          setBoardReady(false);
+        }
+        const program = getProgram(getProvider(wallet));
+        const { bounties: bountyRows, submissions: submissionRows } =
+          await fetchBoardAccounts(program);
+        noteHistoryMoves(bountyRows);
+        loadedAccountRef.current = account;
+        setBounties(bountyRows);
+        setSubmissions(submissionRows);
+      } catch (e) {
+        console.error(e);
+        if (!quiet) {
+          notifyError(
+            "Failed to fetch bounties",
+            e instanceof Error ? e.message : undefined
+          );
+        }
+      } finally {
+        if (!quiet) setRefreshing(false);
+        if (wallet && publicKey) setBoardReady(true);
+      }
+    };
+    const task = refreshTail.current.then(run, run);
+    refreshTail.current = task.then(
+      () => undefined,
+      () => undefined
+    );
+    return task;
   }, [wallet, publicKey, connection, splMint]);
 
   function noteHistoryMoves(rows: BountyAccount[]) {
@@ -351,6 +366,36 @@ export default function BountyBoard() {
     }
     void refresh();
   }, [refresh, connected, accountKey]);
+
+  useEffect(() => {
+    if (!connected || !publicKey) return;
+    const lastSocketAt = { current: Date.now() };
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const subscription = connection.onProgramAccountChange(
+      PROGRAM_ID,
+      () => {
+        lastSocketAt.current = Date.now();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          void refresh({ quiet: true });
+        }, LIVE_DEBOUNCE_MS);
+      },
+      "confirmed"
+    );
+
+    const pollTimer = setInterval(() => {
+      if (Date.now() - lastSocketAt.current < LIVE_POLL_MS) return;
+      void refresh({ quiet: true });
+    }, LIVE_POLL_MS);
+
+    return () => {
+      void connection.removeProgramAccountChangeListener(subscription);
+      clearInterval(pollTimer);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [connected, publicKey, connection, refresh]);
 
   useEffect(() => {
     if (view === "history") setHistoryNotice(0);
