@@ -56,4 +56,34 @@ pub mod bounty_board {
     pub fn reclaim_submission(ctx: Context<ReclaimSubmission>, uri_hash: [u8; 32]) -> Result<()> {
         instructions::reclaim_submission::handle_reclaim_submission(ctx, uri_hash)
     }
+
+    pub fn create_token_bounty(
+        ctx: Context<CreateTokenBounty>,
+        bounty_id: u64,
+        amount: u64,
+        deadline: i64,
+        title: String,
+        description: String,
+    ) -> Result<()> {
+        instructions::create_token_bounty::handle_create_token_bounty(
+            ctx,
+            bounty_id,
+            amount,
+            deadline,
+            title,
+            description,
+        )
+    }
+
+    pub fn accept_token(ctx: Context<AcceptToken>) -> Result<()> {
+        instructions::accept_token::handle_accept_token(ctx)
+    }
+
+    pub fn cancel_token(ctx: Context<CancelToken>) -> Result<()> {
+        instructions::cancel_token::handle_cancel_token(ctx)
+    }
+
+    pub fn expire_refund_token(ctx: Context<ExpireRefundToken>) -> Result<()> {
+        instructions::expire_refund_token::handle_expire_refund_token(ctx)
+    }
 }

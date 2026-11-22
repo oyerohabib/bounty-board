@@ -19,7 +19,8 @@ pub struct Accept<'info> {
         bump = bounty.bump,
         has_one = creator @ BountyError::UnauthorizedCreator,
         constraint = bounty.status == BountyStatus::Open @ BountyError::NotOpen,
-        constraint = bounty.submission_count > 0 @ BountyError::NoSubmission
+        constraint = bounty.submission_count > 0 @ BountyError::NoSubmission,
+        constraint = bounty.mint == Pubkey::default() @ BountyError::WrongAsset
     )]
     pub bounty: Account<'info, Bounty>,
 

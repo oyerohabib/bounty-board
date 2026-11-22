@@ -14,7 +14,7 @@ default = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
@@ -22,6 +22,7 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = { version = "1.2.2", features = ["init-if-needed"] }
+anchor-spl = "1.2.2"
 solana-sha256-hasher = { version = "3.1.0", default-features = false, features = ["sha2"] }
 
 [dev-dependencies]
@@ -31,6 +32,11 @@ solana-message = "4"
 solana-transaction = "4"
 solana-signer = "3"
 solana-keypair = "3"
+solana-account = "4.3.1"
+solana-program-option = "3.1.0"
+solana-program-pack = "3.1.0"
+spl-associated-token-account-interface = "2.0.0"
+spl-token-interface = "2.0.0"
 
 
 [lints.rust]

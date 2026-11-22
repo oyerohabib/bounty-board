@@ -34,4 +34,8 @@ pub enum BountyError {
     InvalidUriHash,
     #[msg("Winning submission cannot be reclaimed")]
     CannotReclaimWinner,
+    #[msg("This instruction does not match the bounty's asset")]
+    WrongAsset,
+    #[msg("Vault token balance does not match the escrowed amount")]
+    VaultBalanceMismatch,
 }

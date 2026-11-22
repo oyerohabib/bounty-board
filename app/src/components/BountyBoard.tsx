@@ -19,6 +19,9 @@ import {
   uriHashBytes,
   statusLabel,
   isOpenStatus,
+  isSolBounty,
+  formatBaseUnits,
+  parseBaseUnits,
   formatTxError,
   rpcWithSim,
   type RpcOutcome,
@@ -26,6 +29,17 @@ import {
   SUBMISSION_RENT_SOL,
   SystemProgram,
 } from "@/lib/program";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  DEVNET_USDC_MINT,
+  TOKEN_PROGRAM_ID,
+  USDC_DECIMALS,
+  assetLabel,
+  associatedTokenAddress,
+  fetchMintDecimals,
+  fetchTokenBalance,
+  formatAssetAmount,
+} from "@/lib/tokens";
 import { notifySuccess, notifyError } from "@/lib/toast";
 import {
   accountSwitchFrom,
@@ -57,11 +71,18 @@ export default function BountyBoard() {
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [balanceSol, setBalanceSol] = useState<number | null>(null);
+  const [tokenBalance, setTokenBalance] = useState<BN | null>(null);
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [amountSol, setAmountSol] = useState("0.1");
+  const [amountInput, setAmountInput] = useState("0.1");
   const [days, setDays] = useState("7");
+  const [assetChoice, setAssetChoice] = useState<"sol" | "usdc" | "custom">("sol");
+  const [customMint, setCustomMint] = useState("");
+  const [customDecimals, setCustomDecimals] = useState<number | null>(null);
+  const [customMintState, setCustomMintState] = useState<
+    "idle" | "loading" | "ready" | "missing"
+  >("idle");
   /** Per-bounty submission URI drafts (keyed by bounty pubkey). */
   const [submitUris, setSubmitUris] = useState<Record<string, string>>({});
 
@@ -98,6 +119,19 @@ export default function BountyBoard() {
     [bounties]
   );
 
+  const splMint = useMemo(() => {
+    if (assetChoice === "sol") return null;
+    if (assetChoice === "usdc") return DEVNET_USDC_MINT;
+    try {
+      return new PublicKey(customMint.trim());
+    } catch {
+      return null;
+    }
+  }, [assetChoice, customMint]);
+
+  const activeDecimals =
+    assetChoice === "sol" ? 9 : assetChoice === "usdc" ? USDC_DECIMALS : customDecimals;
+
   const reclaimable = useMemo(() => {
     if (!publicKey) return [] as SubmissionAccount[];
     return submissions.filter((s) => {
@@ -122,12 +156,18 @@ export default function BountyBoard() {
       setBounties([]);
       setSubmissions([]);
       setBalanceSol(null);
+      setTokenBalance(null);
       return;
     }
     setRefreshing(true);
     try {
       const lamports = await connection.getBalance(publicKey);
       setBalanceSol(lamports / 1e9);
+      if (splMint) {
+        setTokenBalance(await fetchTokenBalance(connection, splMint, publicKey));
+      } else {
+        setTokenBalance(null);
+      }
       const program = getProgram(getProvider(wallet));
       const { bounties: bountyRows, submissions: submissionRows } =
         await fetchBoardAccounts(program);
@@ -142,7 +182,32 @@ export default function BountyBoard() {
     } finally {
       setRefreshing(false);
     }
-  }, [wallet, publicKey, connection]);
+  }, [wallet, publicKey, connection, splMint]);
+
+  useEffect(() => {
+    if (assetChoice !== "custom" || !splMint) {
+      setCustomDecimals(null);
+      setCustomMintState("idle");
+      return;
+    }
+    let cancelled = false;
+    setCustomDecimals(null);
+    setCustomMintState("loading");
+    fetchMintDecimals(connection, splMint)
+      .then((decimals) => {
+        if (cancelled) return;
+        setCustomDecimals(decimals);
+        setCustomMintState("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCustomDecimals(null);
+        setCustomMintState("missing");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assetChoice, connection, splMint]);
 
   useEffect(() => {
     // No-op switch: reconnect landed on the same key — skip board refresh.
@@ -203,22 +268,55 @@ export default function BountyBoard() {
     e.preventDefault();
     if (!wallet || !publicKey) return;
 
-    const amountLamports = Math.round(parseFloat(amountSol) * 1e9);
-    if (!Number.isFinite(amountLamports) || amountLamports <= 0) {
-      notifyError("Enter a valid SOL amount greater than 0.");
+    if (assetChoice === "custom" && !splMint) {
+      notifyError("Enter a valid SPL mint address.");
       return;
     }
-    const rentBuffer = 0.01;
-    if (balanceSol !== null && balanceSol < amountLamports / 1e9 + rentBuffer) {
+    if (activeDecimals == null) {
       notifyError(
-        "Not enough SOL",
-        `Need ~${(amountLamports / 1e9 + rentBuffer).toFixed(3)} SOL (escrow + rent); you have ${balanceSol.toFixed(4)} SOL.`
+        "Could not read that mint",
+        "It must be a classic SPL token (the same program USDC uses)."
       );
       return;
     }
 
+    const amount = parseBaseUnits(amountInput, activeDecimals);
+    if (!amount) {
+      notifyError(
+        "Enter a valid amount greater than 0",
+        `At most ${activeDecimals} decimal places.`
+      );
+      return;
+    }
+
+    const rentBuffer = 0.01;
+    if (assetChoice === "sol") {
+      const needed = amount.toNumber() / 1e9 + rentBuffer;
+      if (balanceSol !== null && balanceSol < needed) {
+        notifyError(
+          "Not enough SOL",
+          `Need ~${needed.toFixed(3)} SOL (escrow + rent); you have ${balanceSol.toFixed(4)} SOL.`
+        );
+        return;
+      }
+    } else if (splMint) {
+      if (balanceSol !== null && balanceSol < rentBuffer) {
+        notifyError(
+          "Not enough SOL for rent",
+          `Token escrow still needs ~${rentBuffer} SOL for the vault and fees; you have ${balanceSol?.toFixed(4) ?? "0"} SOL.`
+        );
+        return;
+      }
+      if (tokenBalance !== null && tokenBalance.lt(amount)) {
+        notifyError(
+          "Not enough tokens",
+          `Need ${formatBaseUnits(amount, activeDecimals)} ${assetLabel(splMint)}; you have ${formatBaseUnits(tokenBalance, activeDecimals)}.`
+        );
+        return;
+      }
+    }
+
     const bountyId = new BN(Date.now());
-    const amount = new BN(amountLamports);
     const deadline = new BN(
       Math.floor(Date.now() / 1000) + parseInt(days, 10) * 86400
     );
@@ -227,14 +325,34 @@ export default function BountyBoard() {
 
     await withTx("Created", async () => {
       const program = getProgram(getProvider(wallet));
-      const builder = program.methods
-        .createBounty(bountyId, amount, deadline, title.trim(), description.trim())
-        .accountsPartial({
-          creator: publicKey,
-          bounty,
-          vault,
-          systemProgram: SystemProgram.programId,
-        });
+      const builder =
+        assetChoice === "sol" || !splMint
+          ? program.methods
+              .createBounty(bountyId, amount, deadline, title.trim(), description.trim())
+              .accountsPartial({
+                creator: publicKey,
+                bounty,
+                vault,
+                systemProgram: SystemProgram.programId,
+              })
+          : program.methods
+              .createTokenBounty(
+                bountyId,
+                amount,
+                deadline,
+                title.trim(),
+                description.trim()
+              )
+              .accountsPartial({
+                creator: publicKey,
+                mint: splMint,
+                bounty,
+                vault,
+                creatorTokenAccount: associatedTokenAddress(splMint, publicKey),
+                tokenProgram: TOKEN_PROGRAM_ID,
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                systemProgram: SystemProgram.programId,
+              });
       const result = await rpcWithSim(
         builder,
         publicKey,
@@ -336,15 +454,29 @@ export default function BountyBoard() {
     if (!wallet || !publicKey) return;
     const [vault] = vaultPda(row.publicKey);
     const hunter = new PublicKey(sub.account.hunter.toString());
+    const spl = !isSolBounty(row.account);
     await withTx("Accepted", async () => {
       const program = getProgram(getProvider(wallet));
-      const builder = program.methods.accept().accountsPartial({
-        creator: publicKey,
-        hunter,
-        bounty: row.publicKey,
-        submission: sub.publicKey,
-        vault,
-      });
+      const builder = spl
+        ? program.methods.acceptToken().accountsPartial({
+            creator: publicKey,
+            hunter,
+            mint: row.account.mint,
+            bounty: row.publicKey,
+            submission: sub.publicKey,
+            vault,
+            hunterTokenAccount: associatedTokenAddress(row.account.mint, hunter),
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+        : program.methods.accept().accountsPartial({
+            creator: publicKey,
+            hunter,
+            bounty: row.publicKey,
+            submission: sub.publicKey,
+            vault,
+          });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
@@ -352,13 +484,27 @@ export default function BountyBoard() {
   async function onCancel(row: BountyAccount) {
     if (!wallet || !publicKey) return;
     const [vault] = vaultPda(row.publicKey);
+    const spl = !isSolBounty(row.account);
     await withTx("Cancelled", async () => {
       const program = getProgram(getProvider(wallet));
-      const builder = program.methods.cancel().accountsPartial({
-        creator: publicKey,
-        bounty: row.publicKey,
-        vault,
-      });
+      const builder = spl
+        ? program.methods.cancelToken().accountsPartial({
+            creator: publicKey,
+            mint: row.account.mint,
+            bounty: row.publicKey,
+            vault,
+            creatorTokenAccount: associatedTokenAddress(
+              row.account.mint,
+              publicKey
+            ),
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          })
+        : program.methods.cancel().accountsPartial({
+            creator: publicKey,
+            bounty: row.publicKey,
+            vault,
+          });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
@@ -366,14 +512,29 @@ export default function BountyBoard() {
   async function onExpire(row: BountyAccount) {
     if (!wallet || !publicKey) return;
     const [vault] = vaultPda(row.publicKey);
+    const spl = !isSolBounty(row.account);
     await withTx("Expired refund", async () => {
       const program = getProgram(getProvider(wallet));
-      const builder = program.methods.expireRefund().accountsPartial({
-        caller: publicKey,
-        creator: row.account.creator,
-        bounty: row.publicKey,
-        vault,
-      });
+      const builder = spl
+        ? program.methods.expireRefundToken().accountsPartial({
+            caller: publicKey,
+            creator: row.account.creator,
+            mint: row.account.mint,
+            bounty: row.publicKey,
+            vault,
+            creatorTokenAccount: associatedTokenAddress(
+              row.account.mint,
+              row.account.creator
+            ),
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          })
+        : program.methods.expireRefund().accountsPartial({
+            caller: publicKey,
+            creator: row.account.creator,
+            bounty: row.publicKey,
+            vault,
+          });
       return rpcWithSim(builder, publicKey, connection, sendTransaction);
     });
   }
@@ -446,7 +607,11 @@ export default function BountyBoard() {
           <div>
             Reward:{" "}
             <strong className="text-stone-900">
-              {(b.account.amount.toNumber() / 1e9).toFixed(3)} SOL
+              {formatAssetAmount(
+                b.account.amount,
+                b.account.decimals,
+                b.account.mint
+              )}
             </strong>
           </div>
           <div className="sm:text-right">
@@ -594,7 +759,7 @@ export default function BountyBoard() {
             </h1>
           </div>
           <p className="mt-2 max-w-lg text-stone-600">
-            Post a bounty, lock SOL in escrow, and pay hunters when work lands.
+            Post a bounty, lock SOL or an SPL token in escrow, and pay hunters when work lands.
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -677,16 +842,58 @@ export default function BountyBoard() {
                 rows={3}
                 required
               />
+              <label className="text-sm text-stone-600">
+                Asset
+                <select
+                  className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
+                  value={assetChoice}
+                  onChange={(e) =>
+                    setAssetChoice(e.target.value as "sol" | "usdc" | "custom")
+                  }
+                >
+                  <option value="sol">SOL</option>
+                  <option value="usdc">USDC (Devnet)</option>
+                  <option value="custom">Custom SPL mint</option>
+                </select>
+                <span className="mt-1 block text-xs text-stone-500">
+                  USDC is Circle&apos;s Devnet mint. Custom mints must use the classic SPL Token program.
+                </span>
+              </label>
+              {assetChoice === "custom" && (
+                <label className="text-sm text-stone-600">
+                  Mint address
+                  <input
+                    className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2 font-mono text-sm"
+                    placeholder="Token mint public key"
+                    value={customMint}
+                    onChange={(e) => setCustomMint(e.target.value)}
+                    spellCheck={false}
+                    required
+                  />
+                </label>
+              )}
+              {assetChoice !== "sol" && splMint && (
+                <p className="text-sm text-stone-600">
+                  Balance:{" "}
+                  <strong className="text-stone-900">
+                    {tokenBalance && activeDecimals != null
+                      ? `${formatBaseUnits(tokenBalance, activeDecimals)} ${assetLabel(splMint)}`
+                      : "…"}
+                  </strong>
+                  {customMintState === "missing"
+                    ? " · mint not found on this cluster"
+                    : ""}
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-sm text-stone-600">
-                  Amount (SOL)
+                  Amount ({assetChoice === "sol" ? "SOL" : assetChoice === "usdc" ? "USDC" : "tokens"})
                   <input
                     className="mt-1 w-full rounded border border-stone-300 bg-white px-3 py-2"
-                    type="number"
-                    step="0.001"
-                    min="0.001"
-                    value={amountSol}
-                    onChange={(e) => setAmountSol(e.target.value)}
+                    type="text"
+                    inputMode="decimal"
+                    value={amountInput}
+                    onChange={(e) => setAmountInput(e.target.value)}
                     required
                   />
                 </label>

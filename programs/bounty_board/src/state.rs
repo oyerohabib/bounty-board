@@ -27,6 +27,10 @@ pub struct Bounty {
     pub winner: Pubkey,
     pub bump: u8,
     pub vault_bump: u8,
+    /// `Pubkey::default()` means the escrow is native SOL.
+    pub mint: Pubkey,
+    /// 9 for SOL; copied from the mint for SPL.
+    pub decimals: u8,
 }
 
 /// One submission per hunter for a given bounty.
@@ -51,6 +55,7 @@ pub struct UriClaim {
 }
 
 /// Empty program-owned account that holds escrowed SOL.
+/// SPL bounties use a token account at the same vault seeds instead.
 #[account]
 #[derive(InitSpace)]
 pub struct Vault {}
