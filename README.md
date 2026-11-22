@@ -14,7 +14,7 @@ Post bounties, lock SOL, Devnet USDC, or a custom classic SPL token in escrow, a
 |-------|------|
 | On-chain | Anchor 1.2 / Solana |
 | Tests | LiteSVM (`cargo test`); app unit and browser tests |
-| Frontend | Next.js 15 + Phantom wallet-adapter |
+| Frontend | Next.js 15, React 19, Tailwind, wallet-adapter (Phantom, Solflare, or Backpack) |
 | Cluster | Devnet (UI default); localnet for offline deploy |
 
 **Program ID:** `5rL8PzKb61y7VxB5ML1uWMTgqv2kUAA1qkUMoY6Xpm8y`
