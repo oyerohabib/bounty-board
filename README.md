@@ -13,7 +13,7 @@ Post bounties, lock SOL, Devnet USDC, or a custom classic SPL token in escrow, a
 | Layer | Tech |
 |-------|------|
 | On-chain | Anchor 1.2 / Solana |
-| Tests | LiteSVM (`cargo test`) |
+| Tests | LiteSVM (`cargo test`); app unit and browser tests |
 | Frontend | Next.js 15 + Phantom wallet-adapter |
 | Cluster | Devnet (UI default); localnet for offline deploy |
 
@@ -46,6 +46,16 @@ cd app && npm install --legacy-peer-deps && npm run dev
 ```
 
 Open http://localhost:3000 — connect Phantom (Devnet).
+
+Frontend tests, from `app`:
+
+```bash
+npm test
+npx playwright install chromium
+npm run test:e2e
+```
+
+`npm test` runs Vitest. `npm run test:e2e` starts the app and runs Playwright. GitHub Actions runs both on pull requests and on pushes to `main`.
 
 ## Deploy
 
