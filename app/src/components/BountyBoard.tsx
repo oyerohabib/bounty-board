@@ -56,6 +56,7 @@ import {
   type StatusFilter,
 } from "@/lib/boardQuery";
 import { setBoardChromeState } from "@/lib/boardChromeState";
+import { collectHistoryMoves } from "@/lib/historyNotice";
 
 const HOME_PREVIEW = 5;
 const LIVE_DEBOUNCE_MS = 500;
@@ -283,50 +284,27 @@ export default function BountyBoard() {
   }, [wallet, publicKey, connection, splMint]);
 
   function noteHistoryMoves(rows: BountyAccount[]) {
-    const openNow = new Set(
-      rows
-        .filter((bounty) => isOpenStatus(bounty.account.status))
-        .map((bounty) => bounty.publicKey.toBase58())
+    const move = collectHistoryMoves(
+      rows,
+      openKeysRef.current,
+      ownSettledRef.current
     );
-    const previous = openKeysRef.current;
-    openKeysRef.current = openNow;
-    if (!previous) return;
-
-    const settled = new Map(
-      rows
-        .filter((bounty) => !isOpenStatus(bounty.account.status))
-        .map((bounty) => [bounty.publicKey.toBase58(), bounty] as const)
-    );
-    const announced: BountyAccount[] = [];
-    let noticed = 0;
-    for (const key of previous) {
-      if (openNow.has(key)) {
-        ownSettledRef.current.delete(key);
-        continue;
-      }
-      const row = settled.get(key);
-      if (!row) continue;
-      noticed += 1;
-      if (ownSettledRef.current.has(key)) {
-        ownSettledRef.current.delete(key);
-        continue;
-      }
-      announced.push(row);
-    }
-    if (announced.length === 1) {
-      const title = announced[0].account.title.trim();
+    openKeysRef.current = move.nextOpenKeys;
+    ownSettledRef.current = move.ownSettled;
+    if (move.announced.length === 1) {
+      const title = move.announced[0].account.title.trim();
       notifySuccess(
         "Moved to History",
         title || "A bounty is now completed, cancelled, or expired."
       );
-    } else if (announced.length > 1) {
+    } else if (move.announced.length > 1) {
       notifySuccess(
         "Moved to History",
-        `${announced.length} bounties are now in History.`
+        `${move.announced.length} bounties are now in History.`
       );
     }
-    if (noticed > 0 && pathnameRef.current !== "/history") {
-      setHistoryNotice((count) => count + noticed);
+    if (move.noticed > 0 && pathnameRef.current !== "/history") {
+      setHistoryNotice((count) => count + move.noticed);
     }
   }
 
